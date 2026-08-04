@@ -2,6 +2,7 @@
 
 import {
   GoogleMap,
+  InfoWindowF,
   MarkerF,
   PolylineF,
   useJsApiLoader,
@@ -11,30 +12,38 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { cn } from '@/lib/utils';
 import type { NearbyPlace } from '@/services/mapService';
 import type { TripGeneratorResponse } from '@/types/database';
-import { flattenScheduleItems } from '@/utils/exportMap';
+import { makePlaceKey, type PlaceFocusTarget } from '@/utils/placeKey';
 
 interface TripMapProps {
   trip: TripGeneratorResponse;
   selectedKey: string | null;
+  /** Hover or selection highlight (marker scale) */
+  highlightKey?: string | null;
+  /** Explicit lat/lng focus — preferred over key lookup for panTo reliability */
+  focusTarget?: PlaceFocusTarget | null;
   activeDay: number | 'all';
   nearbyPlaces?: NearbyPlace[];
-  onSelect: (key: string) => void;
+  onSelect: (key: string, target: PlaceFocusTarget) => void;
 }
 
 const DAY_COLORS = ['#0f6b5c', '#d4572a', '#1d4e89', '#7a3e9d', '#b45309'];
 const MAP_LIBRARIES: ('places' | 'geometry')[] = ['places'];
 
-function placeKey(day: number, index: number): string {
-  return `${day}-${index}`;
-}
-
 function dayColor(day: number): string {
   return DAY_COLORS[(day - 1) % DAY_COLORS.length];
 }
 
-type MapMarker = ReturnType<typeof flattenScheduleItems>[number] & {
+type MapMarker = {
   key: string;
+  day: number;
+  theme: string;
   orderInDay: number;
+  index: number;
+  place_name: string;
+  place_id?: string | null;
+  latitude: number;
+  longitude: number;
+  time_slot: string;
 };
 
 function useTripMarkers(
@@ -42,29 +51,41 @@ function useTripMarkers(
   activeDay: number | 'all',
 ): MapMarker[] {
   return useMemo(() => {
-    const all = flattenScheduleItems(trip);
-    const filtered =
-      activeDay === 'all'
-        ? all
-        : all.filter((item) => item.day === activeDay);
+    const markers: MapMarker[] = [];
 
-    return filtered.map((item) => {
-      const daySchedule = trip.itinerary.find((d) => d.day === item.day);
-      const indexInDay = daySchedule
-        ? daySchedule.schedule.findIndex(
-            (s) =>
-              s.place_name === item.place_name &&
-              s.time_slot === item.time_slot,
-          )
-        : 0;
+    for (const day of trip.itinerary) {
+      if (activeDay !== 'all' && day.day !== activeDay) continue;
 
-      return {
-        ...item,
-        key: placeKey(item.day, Math.max(0, indexInDay)),
-        orderInDay: Math.max(0, indexInDay) + 1,
-      };
-    });
+      day.schedule.forEach((item, index) => {
+        markers.push({
+          key: makePlaceKey(day.day, index, item),
+          day: day.day,
+          theme: day.theme,
+          orderInDay: index + 1,
+          index,
+          place_name: item.place_name,
+          place_id: item.place_id,
+          latitude: item.latitude,
+          longitude: item.longitude,
+          time_slot: item.time_slot,
+        });
+      });
+    }
+
+    return markers;
   }, [trip, activeDay]);
+}
+
+function markerToFocus(marker: MapMarker): PlaceFocusTarget {
+  return {
+    key: marker.key,
+    day: marker.day,
+    index: marker.index,
+    latitude: marker.latitude,
+    longitude: marker.longitude,
+    place_name: marker.place_name,
+    place_id: marker.place_id,
+  };
 }
 
 function SchematicMap({
@@ -78,7 +99,7 @@ function SchematicMap({
   markers: MapMarker[];
   selectedKey: string | null;
   activeDay: number | 'all';
-  onSelect: (key: string) => void;
+  onSelect: (key: string, target: PlaceFocusTarget) => void;
 }) {
   const bounds = useMemo(() => {
     if (markers.length === 0) {
@@ -165,7 +186,7 @@ function SchematicMap({
   }, [markers, activeDay, trip.itinerary, bounds]);
 
   return (
-    <div className="relative h-full min-h-[360px] overflow-hidden rounded-2xl bg-[var(--map-bg)]">
+    <div className="relative h-full min-h-[280px] overflow-hidden rounded-2xl bg-[var(--map-bg)] sm:min-h-[360px]">
       <svg
         viewBox="0 0 1000 640"
         preserveAspectRatio="xMidYMid meet"
@@ -193,13 +214,14 @@ function SchematicMap({
               key={marker.key}
               transform={`translate(${x}, ${y})`}
               className="cursor-pointer"
-              onClick={() => onSelect(marker.key)}
+              onClick={() => onSelect(marker.key, markerToFocus(marker))}
             >
               <circle
-                r={selected ? 24 : 17}
+                r={selected ? 26 : 17}
                 fill={selected ? '#d4572a' : dayColor(marker.day)}
                 stroke="#f3f0e8"
                 strokeWidth="3"
+                className={selected ? 'animate-pulse' : undefined}
               />
               <text
                 textAnchor="middle"
@@ -227,6 +249,8 @@ function GoogleTripMap({
   trip,
   markers,
   selectedKey,
+  highlightKey,
+  focusTarget,
   activeDay,
   nearbyPlaces,
   onSelect,
@@ -235,9 +259,11 @@ function GoogleTripMap({
   trip: TripGeneratorResponse;
   markers: MapMarker[];
   selectedKey: string | null;
+  highlightKey: string | null;
+  focusTarget?: PlaceFocusTarget | null;
   activeDay: number | 'all';
   nearbyPlaces: NearbyPlace[];
-  onSelect: (key: string) => void;
+  onSelect: (key: string, target: PlaceFocusTarget) => void;
   apiKey: string;
 }) {
   const { isLoaded, loadError } = useJsApiLoader({
@@ -248,6 +274,14 @@ function GoogleTripMap({
 
   const mapRef = useRef<google.maps.Map | null>(null);
   const [mapReady, setMapReady] = useState(false);
+  const [infoKey, setInfoKey] = useState<string | null>(null);
+  const [bounceKey, setBounceKey] = useState<string | null>(null);
+  const prevDayRef = useRef<number | 'all' | null>(null);
+  const [initialCenter] = useState(() =>
+    markers.length > 0
+      ? { lat: markers[0].latitude, lng: markers[0].longitude }
+      : { lat: 25.033, lng: 121.565 },
+  );
 
   const dayPaths = useMemo(() => {
     const days =
@@ -279,53 +313,72 @@ function GoogleTripMap({
       );
   }, [markers, activeDay, trip.itinerary]);
 
-  const fitBounds = useCallback(
-    (map: google.maps.Map) => {
-      if (markers.length === 0) return;
+  const fitBounds = useCallback((map: google.maps.Map, list: MapMarker[]) => {
+    if (list.length === 0) return;
 
-      if (markers.length === 1) {
-        map.setCenter({
-          lat: markers[0].latitude,
-          lng: markers[0].longitude,
-        });
-        map.setZoom(14);
-        return;
-      }
-
-      const bounds = new google.maps.LatLngBounds();
-      markers.forEach((m) => {
-        bounds.extend({ lat: m.latitude, lng: m.longitude });
+    if (list.length === 1) {
+      map.setCenter({
+        lat: list[0].latitude,
+        lng: list[0].longitude,
       });
-      map.fitBounds(bounds, 64);
-    },
-    [markers],
-  );
+      map.setZoom(14);
+      return;
+    }
+
+    const bounds = new google.maps.LatLngBounds();
+    list.forEach((m) => {
+      bounds.extend({ lat: m.latitude, lng: m.longitude });
+    });
+    map.fitBounds(bounds, 64);
+  }, []);
+
+  const focusPlace = useCallback((target: PlaceFocusTarget) => {
+    if (!mapRef.current) return;
+    mapRef.current.panTo({
+      lat: target.latitude,
+      lng: target.longitude,
+    });
+    mapRef.current.setZoom(16);
+    setInfoKey(target.key);
+    setBounceKey(target.key);
+  }, []);
 
   const onLoad = useCallback(
     (map: google.maps.Map) => {
       mapRef.current = map;
       setMapReady(true);
-      fitBounds(map);
+      prevDayRef.current = activeDay;
+      fitBounds(map, markers);
     },
+    // only initial markers for first paint; day changes handled separately
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [fitBounds],
   );
 
+  // Fit bounds ONLY when activeDay changes (not on every markers identity change)
   useEffect(() => {
-    if (mapReady && mapRef.current) {
-      fitBounds(mapRef.current);
-    }
-  }, [fitBounds, mapReady, activeDay]);
+    if (!mapReady || !mapRef.current) return;
+    if (prevDayRef.current === activeDay) return;
+    prevDayRef.current = activeDay;
+    fitBounds(mapRef.current, markers);
+  }, [activeDay, fitBounds, mapReady, markers]);
+
+  // Focus by explicit coordinates — works in All Days and single-day views
+  useEffect(() => {
+    if (!mapReady || !focusTarget) return;
+    focusPlace(focusTarget);
+  }, [focusTarget, focusPlace, mapReady]);
 
   useEffect(() => {
-    if (!mapReady || !mapRef.current || !selectedKey) return;
-    const selected = markers.find((m) => m.key === selectedKey);
-    if (!selected) return;
-    mapRef.current.panTo({
-      lat: selected.latitude,
-      lng: selected.longitude,
-    });
-    mapRef.current.setZoom(15);
-  }, [selectedKey, markers, mapReady]);
+    if (!bounceKey) return;
+    const timer = window.setTimeout(() => setBounceKey(null), 1400);
+    return () => window.clearTimeout(timer);
+  }, [bounceKey]);
+
+  // Keep info window in sync with selection
+  useEffect(() => {
+    if (selectedKey) setInfoKey(selectedKey);
+  }, [selectedKey]);
 
   if (loadError) {
     return (
@@ -341,27 +394,26 @@ function GoogleTripMap({
 
   if (!isLoaded) {
     return (
-      <div className="flex h-full min-h-[360px] items-center justify-center rounded-2xl bg-[var(--map-bg)] text-sm text-[var(--ink-soft)]">
+      <div className="flex h-full min-h-[280px] items-center justify-center rounded-2xl bg-[var(--map-bg)] text-sm text-[var(--ink-soft)] sm:min-h-[360px]">
         正在載入 Google 地圖…
       </div>
     );
   }
 
-  const center =
-    markers.length > 0
-      ? { lat: markers[0].latitude, lng: markers[0].longitude }
-      : { lat: 25.033, lng: 121.565 };
+  const infoMarker = markers.find((m) => m.key === infoKey);
 
   return (
-    <div className="relative h-full min-h-[360px] overflow-hidden rounded-2xl">
+    <div className="relative h-full min-h-[280px] overflow-hidden rounded-2xl sm:min-h-[360px]">
       <GoogleMap
-        mapContainerStyle={{ width: '100%', height: '100%', minHeight: 360 }}
-        center={center}
-        zoom={13}
+        mapContainerStyle={{ width: '100%', height: '100%', minHeight: 280 }}
+        // Uncontrolled after load: controlled center/zoom would fight panTo/setZoom(16)
+        {...(mapReady
+          ? {}
+          : { center: initialCenter, zoom: 13 })}
         onLoad={onLoad}
         options={{
           mapTypeControl: true,
-          streetViewControl: true,
+          streetViewControl: false,
           fullscreenControl: true,
           zoomControl: true,
           clickableIcons: true,
@@ -381,7 +433,8 @@ function GoogleTripMap({
         ))}
 
         {markers.map((marker) => {
-          const selected = selectedKey === marker.key;
+          const active =
+            highlightKey === marker.key || selectedKey === marker.key;
           const label =
             activeDay === 'all'
               ? `${marker.day}.${marker.orderInDay}`
@@ -392,6 +445,11 @@ function GoogleTripMap({
               key={marker.key}
               position={{ lat: marker.latitude, lng: marker.longitude }}
               title={marker.place_name}
+              animation={
+                bounceKey === marker.key
+                  ? google.maps.Animation.BOUNCE
+                  : undefined
+              }
               label={{
                 text: label,
                 color: '#ffffff',
@@ -400,14 +458,14 @@ function GoogleTripMap({
               }}
               icon={{
                 path: google.maps.SymbolPath.CIRCLE,
-                scale: selected ? 14 : 11,
-                fillColor: selected ? '#d4572a' : dayColor(marker.day),
+                scale: active ? 16 : 11,
+                fillColor: active ? '#d4572a' : dayColor(marker.day),
                 fillOpacity: 1,
                 strokeColor: '#f3f0e8',
-                strokeWeight: 2,
+                strokeWeight: active ? 3 : 2,
               }}
-              zIndex={selected ? 999 : marker.orderInDay}
-              onClick={() => onSelect(marker.key)}
+              zIndex={active ? 999 : marker.orderInDay}
+              onClick={() => onSelect(marker.key, markerToFocus(marker))}
             />
           );
         })}
@@ -428,13 +486,32 @@ function GoogleTripMap({
             zIndex={500}
           />
         ))}
+
+        {infoMarker && (
+          <InfoWindowF
+            position={{
+              lat: infoMarker.latitude,
+              lng: infoMarker.longitude,
+            }}
+            onCloseClick={() => setInfoKey(null)}
+            options={{ pixelOffset: new google.maps.Size(0, -28) }}
+          >
+            <div className="max-w-[200px] p-1">
+              <p className="text-xs text-slate-500">
+                Day {infoMarker.day} · {infoMarker.time_slot}
+              </p>
+              <p className="mt-0.5 text-sm font-semibold text-slate-900">
+                {infoMarker.place_name}
+              </p>
+            </div>
+          </InfoWindowF>
+        )}
       </GoogleMap>
 
       <div className="pointer-events-none absolute bottom-3 left-3 rounded-lg bg-white/90 px-3 py-1.5 text-xs text-[var(--ink-soft)] shadow-sm">
         {activeDay === 'all' ? '全部天數' : `第 ${activeDay} 天`} ·{' '}
         {markers.length} 個景點
-        {nearbyPlaces.length > 0 ? ` · 順路 ${nearbyPlaces.length} 處` : ''} ·
-        Google 實景地圖
+        {nearbyPlaces.length > 0 ? ` · 順路 ${nearbyPlaces.length} 處` : ''}
       </div>
 
       <div className="absolute top-3 right-3">
@@ -453,19 +530,22 @@ function GoogleTripMap({
 export function TripMap({
   trip,
   selectedKey,
+  highlightKey = null,
+  focusTarget = null,
   activeDay,
   nearbyPlaces = [],
   onSelect,
 }: TripMapProps) {
   const markers = useTripMarkers(trip, activeDay);
   const apiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY?.trim();
+  const effectiveHighlight = highlightKey ?? selectedKey;
 
   if (!apiKey) {
     return (
       <SchematicMap
         trip={trip}
         markers={markers}
-        selectedKey={selectedKey}
+        selectedKey={effectiveHighlight}
         activeDay={activeDay}
         onSelect={onSelect}
       />
@@ -477,6 +557,8 @@ export function TripMap({
       trip={trip}
       markers={markers}
       selectedKey={selectedKey}
+      highlightKey={effectiveHighlight}
+      focusTarget={focusTarget}
       activeDay={activeDay}
       nearbyPlaces={nearbyPlaces}
       onSelect={onSelect}

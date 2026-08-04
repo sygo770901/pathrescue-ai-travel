@@ -5,6 +5,10 @@ import { useSearchParams } from 'next/navigation';
 
 import { DestinationInfoCard } from '@/components/DestinationInfoCard';
 import { ExportMapsButton } from '@/components/ExportMapsButton';
+import {
+  ItineraryBottomSheet,
+  type SheetSnap,
+} from '@/components/ItineraryBottomSheet';
 import { ItineraryPanel } from '@/components/ItineraryPanel';
 import { OfflineBanner } from '@/components/OfflineBanner';
 import { RescuePanel } from '@/components/RescuePanel';
@@ -30,6 +34,7 @@ import type {
   UserTravelProfile,
   RescueModeResponse,
 } from '@/types/database';
+import { toFocusTarget, type PlaceFocusTarget } from '@/utils/placeKey';
 import { replaceSlotAndRecalculate } from '@/utils/timeCalculator';
 
 const FACILITY_LABEL: Record<NearbyFacilityType, string> = {
@@ -48,6 +53,9 @@ export function TripPlannerApp() {
   const [rescue, setRescue] = useState<RescueModeResponse | null>(null);
   const [activeDay, setActiveDay] = useState<number | 'all'>('all');
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const [focusTarget, setFocusTarget] = useState<PlaceFocusTarget | null>(null);
+  const [hoverKey, setHoverKey] = useState<string | null>(null);
+  const [sheetSnap, setSheetSnap] = useState<SheetSnap>('half');
   const [offline, setOffline] = useState(false);
   const [usingCache, setUsingCache] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
@@ -55,6 +63,15 @@ export function TripPlannerApp() {
     useState<UserTravelProfile>(DEFAULT_USER_PROFILE);
   const [nearbyPlaces, setNearbyPlaces] = useState<NearbyPlace[]>([]);
   const [exploring, setExploring] = useState(false);
+
+  const handleSelectPlace = useCallback(
+    (key: string, target: PlaceFocusTarget) => {
+      setSelectedKey(key);
+      setFocusTarget({ ...target });
+      setSheetSnap('mapFocus');
+    },
+    [],
+  );
 
   const travelMode: TravelMode = useMemo(
     () =>
@@ -73,8 +90,21 @@ export function TripPlannerApp() {
       setTrip(nextTrip);
       setTripId(nextTripId ?? null);
       setActiveDay('all');
-      setSelectedKey(nextTrip.itinerary[0]?.schedule[0] ? '1-0' : null);
       setNearbyPlaces([]);
+      setHoverKey(null);
+      setSheetSnap('half');
+
+      const firstDay = nextTrip.itinerary[0];
+      const firstItem = firstDay?.schedule[0];
+      if (firstDay && firstItem) {
+        const target = toFocusTarget(firstDay.day, 0, firstItem);
+        setSelectedKey(target.key);
+        setFocusTarget(null);
+      } else {
+        setSelectedKey(null);
+        setFocusTarget(null);
+      }
+
       if (nextTrip.user_profile) {
         setUserProfile(nextTrip.user_profile);
       }
@@ -242,7 +272,9 @@ export function TripPlannerApp() {
       };
 
       setTrip(nextTrip);
-      setSelectedKey(`${day}-${index}`);
+      const target = toFocusTarget(day, index, replacement);
+      setSelectedKey(target.key);
+      setFocusTarget(target);
       setNearbyPlaces([]);
       const savedId = await persistTrip(nextTrip);
       if (savedId) setTripId(savedId);
@@ -387,15 +419,21 @@ export function TripPlannerApp() {
                 essentials={trip.destination_essentials}
               />
 
-              <div className="grid min-h-0 flex-1 gap-4 xl:grid-cols-[minmax(0,1.15fr)_minmax(320px,0.85fr)]">
-                <TripMap
-                  trip={trip}
-                  selectedKey={selectedKey}
-                  activeDay={activeDay}
-                  nearbyPlaces={nearbyPlaces}
-                  onSelect={setSelectedKey}
-                />
-                <div className="min-h-[360px] rounded-2xl border border-[var(--line)] bg-white/50 p-4 backdrop-blur-sm xl:min-h-0">
+              <div className="relative min-h-[70vh] flex-1 lg:grid lg:min-h-0 lg:grid-cols-[minmax(0,1.15fr)_minmax(320px,0.85fr)] lg:gap-4">
+                <div className="h-[70vh] min-h-[320px] lg:h-auto lg:min-h-[480px]">
+                  <TripMap
+                    trip={trip}
+                    selectedKey={selectedKey}
+                    highlightKey={hoverKey}
+                    focusTarget={focusTarget}
+                    activeDay={activeDay}
+                    nearbyPlaces={nearbyPlaces}
+                    onSelect={handleSelectPlace}
+                  />
+                </div>
+
+                {/* Desktop side panel */}
+                <div className="hidden min-h-[360px] rounded-2xl border border-[var(--line)] bg-white/50 p-4 backdrop-blur-sm lg:block xl:min-h-0">
                   <ItineraryPanel
                     days={trip.itinerary}
                     activeDay={activeDay}
@@ -406,12 +444,40 @@ export function TripPlannerApp() {
                     onSelectDay={(day) => {
                       setActiveDay(day);
                       setNearbyPlaces([]);
+                      setFocusTarget(null);
                     }}
-                    onSelectPlace={setSelectedKey}
+                    onSelectPlace={handleSelectPlace}
+                    onHoverPlace={setHoverKey}
                     onReplaceSlot={handleReplaceSlot}
                     onExploreBetween={handleExploreBetween}
                   />
                 </div>
+
+                {/* Mobile bottom sheet */}
+                <ItineraryBottomSheet
+                  snap={sheetSnap}
+                  onSnapChange={setSheetSnap}
+                  title={`${trip.destination} 行程`}
+                >
+                  <ItineraryPanel
+                    days={trip.itinerary}
+                    activeDay={activeDay}
+                    selectedKey={selectedKey}
+                    destination={trip.destination}
+                    userProfile={trip.user_profile ?? userProfile}
+                    travelMode={travelMode}
+                    onSelectDay={(day) => {
+                      setActiveDay(day);
+                      setNearbyPlaces([]);
+                      setFocusTarget(null);
+                      setSheetSnap('half');
+                    }}
+                    onSelectPlace={handleSelectPlace}
+                    onHoverPlace={setHoverKey}
+                    onReplaceSlot={handleReplaceSlot}
+                    onExploreBetween={handleExploreBetween}
+                  />
+                </ItineraryBottomSheet>
               </div>
             </div>
           )}

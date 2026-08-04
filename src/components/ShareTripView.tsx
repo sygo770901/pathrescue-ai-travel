@@ -1,16 +1,24 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
 import { DestinationInfoCard } from '@/components/DestinationInfoCard';
 import { ExportMapsButton } from '@/components/ExportMapsButton';
+import {
+  ItineraryBottomSheet,
+  type SheetSnap,
+} from '@/components/ItineraryBottomSheet';
 import { ItineraryPanel } from '@/components/ItineraryPanel';
 import { TripMap } from '@/components/TripMap';
 import { transportToTravelMode } from '@/lib/travelProfile';
 import { saveTripToCache } from '@/lib/offline/tripCache';
 import { Toast } from '@/components/Toast';
 import type { PublicTripView } from '@/types/database';
+import {
+  toFocusTarget,
+  type PlaceFocusTarget,
+} from '@/utils/placeKey';
 
 interface ShareTripViewProps {
   tripView: PublicTripView;
@@ -20,9 +28,15 @@ export function ShareTripView({ tripView }: ShareTripViewProps) {
   const router = useRouter();
   const trip = tripView.generated_payload;
   const [activeDay, setActiveDay] = useState<number | 'all'>('all');
-  const [selectedKey, setSelectedKey] = useState<string | null>(
-    trip.itinerary[0]?.schedule[0] ? '1-0' : null,
+  const first = trip.itinerary[0]?.schedule[0];
+  const [selectedKey, setSelectedKey] = useState<string | null>(() =>
+    first && trip.itinerary[0]
+      ? toFocusTarget(trip.itinerary[0].day, 0, first).key
+      : null,
   );
+  const [focusTarget, setFocusTarget] = useState<PlaceFocusTarget | null>(null);
+  const [hoverKey, setHoverKey] = useState<string | null>(null);
+  const [sheetSnap, setSheetSnap] = useState<SheetSnap>('half');
   const [cloning, setCloning] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
 
@@ -32,9 +46,17 @@ export function ShareTripView({ tripView }: ShareTripViewProps) {
   );
 
   const travelMode = useMemo(
-    () =>
-      transportToTravelMode(trip.user_profile?.transport ?? 'transit'),
+    () => transportToTravelMode(trip.user_profile?.transport ?? 'transit'),
     [trip.user_profile?.transport],
+  );
+
+  const handleSelectPlace = useCallback(
+    (key: string, target: PlaceFocusTarget) => {
+      setSelectedKey(key);
+      setFocusTarget({ ...target });
+      setSheetSnap('mapFocus');
+    },
+    [],
   );
 
   async function handleClone() {
@@ -53,7 +75,6 @@ export function ShareTripView({ tripView }: ShareTripViewProps) {
       };
 
       if (response.status === 401 || json.code === 'NEED_AUTH') {
-        // Guest fallback: clone into local cache and open home editor
         saveTripToCache(`local-clone-${tripView.id}`, {
           ...trip,
           trip_title: `${trip.trip_title}（副本）`,
@@ -83,6 +104,21 @@ export function ShareTripView({ tripView }: ShareTripViewProps) {
       setCloning(false);
     }
   }
+
+  const panelProps = {
+    days: trip.itinerary,
+    activeDay,
+    selectedKey,
+    destination: trip.destination,
+    userProfile: trip.user_profile,
+    travelMode,
+    onSelectDay: (day: number | 'all') => {
+      setActiveDay(day);
+      setFocusTarget(null);
+    },
+    onSelectPlace: handleSelectPlace,
+    onHoverPlace: setHoverKey,
+  } as const;
 
   return (
     <div className="mx-auto flex min-h-screen w-full max-w-7xl flex-col px-4 py-6 sm:px-6 lg:px-8">
@@ -115,25 +151,29 @@ export function ShareTripView({ tripView }: ShareTripViewProps) {
         essentials={trip.destination_essentials}
       />
 
-      <div className="mt-4 grid min-h-[70vh] gap-4 xl:grid-cols-[minmax(0,1.15fr)_minmax(320px,0.85fr)]">
-        <TripMap
-          trip={trip}
-          selectedKey={selectedKey}
-          activeDay={activeDay}
-          onSelect={setSelectedKey}
-        />
-        <div className="min-h-[360px] rounded-2xl border border-[var(--line)] bg-white/50 p-4 backdrop-blur-sm xl:min-h-0">
-          <ItineraryPanel
-            days={trip.itinerary}
-            activeDay={activeDay}
+      <div className="relative mt-4 min-h-[70vh] lg:grid lg:grid-cols-[minmax(0,1.15fr)_minmax(320px,0.85fr)] lg:gap-4">
+        <div className="h-[70vh] min-h-[320px] lg:h-auto lg:min-h-[480px]">
+          <TripMap
+            trip={trip}
             selectedKey={selectedKey}
-            destination={trip.destination}
-            userProfile={trip.user_profile}
-            travelMode={travelMode}
-            onSelectDay={setActiveDay}
-            onSelectPlace={setSelectedKey}
+            highlightKey={hoverKey}
+            focusTarget={focusTarget}
+            activeDay={activeDay}
+            onSelect={handleSelectPlace}
           />
         </div>
+
+        <div className="hidden min-h-[360px] rounded-2xl border border-[var(--line)] bg-white/50 p-4 backdrop-blur-sm lg:block">
+          <ItineraryPanel {...panelProps} />
+        </div>
+
+        <ItineraryBottomSheet
+          snap={sheetSnap}
+          onSnapChange={setSheetSnap}
+          title={`${trip.destination} 行程`}
+        >
+          <ItineraryPanel {...panelProps} />
+        </ItineraryBottomSheet>
       </div>
 
       <Toast message={toast} onClose={() => setToast(null)} />
