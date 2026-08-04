@@ -2,7 +2,23 @@
 
 import { FormEvent, useState } from 'react';
 
+import {
+  BUDGET_OPTIONS,
+  COMPANION_OPTIONS,
+  DEFAULT_USER_PROFILE,
+  DIETARY_OPTIONS,
+  PACE_OPTIONS,
+  TRANSPORT_OPTIONS,
+} from '@/lib/travelProfile';
 import { cn } from '@/lib/utils';
+import type {
+  DietaryPreference,
+  TravelBudget,
+  TravelCompanion,
+  TravelPace,
+  TravelTransport,
+  UserTravelProfile,
+} from '@/types/database';
 
 export const PREFERENCE_OPTIONS = [
   { id: 'food', label: '美食' },
@@ -16,6 +32,7 @@ export interface SearchFormValues {
   total_days: number;
   preferences: string[];
   notes: string;
+  user_profile: UserTravelProfile;
 }
 
 interface SearchFormProps {
@@ -23,14 +40,71 @@ interface SearchFormProps {
   onSubmit: (values: SearchFormValues) => void;
 }
 
+function OptionGroup<T extends string>({
+  legend,
+  options,
+  value,
+  onChange,
+}: {
+  legend: string;
+  options: Array<{ id: T; label: string }>;
+  value: T;
+  onChange: (id: T) => void;
+}) {
+  return (
+    <fieldset className="space-y-2">
+      <legend className="text-xs font-medium tracking-wide text-[var(--ink-soft)] uppercase">
+        {legend}
+      </legend>
+      <div className="flex flex-wrap gap-2">
+        {options.map((option) => {
+          const active = value === option.id;
+          return (
+            <button
+              key={option.id}
+              type="button"
+              onClick={() => onChange(option.id)}
+              className={cn(
+                'rounded-lg px-3 py-1.5 text-xs transition sm:text-sm',
+                active
+                  ? 'bg-[var(--sea)] text-white'
+                  : 'bg-white/60 text-[var(--ink-soft)] hover:bg-white',
+              )}
+            >
+              {option.label}
+            </button>
+          );
+        })}
+      </div>
+    </fieldset>
+  );
+}
+
 export function SearchForm({ loading = false, onSubmit }: SearchFormProps) {
   const [destination, setDestination] = useState('東京');
   const [totalDays, setTotalDays] = useState(3);
   const [preferences, setPreferences] = useState<string[]>(['food', 'photo']);
   const [notes, setNotes] = useState('');
+  const [pace, setPace] = useState<TravelPace>(DEFAULT_USER_PROFILE.pace);
+  const [companions, setCompanions] = useState<TravelCompanion>(
+    DEFAULT_USER_PROFILE.companions,
+  );
+  const [budget, setBudget] = useState<TravelBudget>(DEFAULT_USER_PROFILE.budget);
+  const [transport, setTransport] = useState<TravelTransport>(
+    DEFAULT_USER_PROFILE.transport,
+  );
+  const [dietary, setDietary] = useState<DietaryPreference[]>(
+    DEFAULT_USER_PROFILE.dietary,
+  );
 
   function togglePreference(id: string) {
     setPreferences((prev) =>
+      prev.includes(id) ? prev.filter((p) => p !== id) : [...prev, id],
+    );
+  }
+
+  function toggleDietary(id: DietaryPreference) {
+    setDietary((prev) =>
       prev.includes(id) ? prev.filter((p) => p !== id) : [...prev, id],
     );
   }
@@ -45,6 +119,13 @@ export function SearchForm({ loading = false, onSubmit }: SearchFormProps) {
       total_days: totalDays,
       preferences,
       notes: notes.trim(),
+      user_profile: {
+        pace,
+        companions,
+        budget,
+        transport,
+        dietary,
+      },
     });
   }
 
@@ -99,6 +180,57 @@ export function SearchForm({ loading = false, onSubmit }: SearchFormProps) {
                   'rounded-lg px-3.5 py-2 text-sm transition',
                   active
                     ? 'bg-[var(--sea)] text-white'
+                    : 'bg-white/60 text-[var(--ink-soft)] hover:bg-white',
+                )}
+              >
+                {option.label}
+              </button>
+            );
+          })}
+        </div>
+      </fieldset>
+
+      <OptionGroup
+        legend="步調風格"
+        options={PACE_OPTIONS}
+        value={pace}
+        onChange={setPace}
+      />
+      <OptionGroup
+        legend="同行夥伴"
+        options={COMPANION_OPTIONS}
+        value={companions}
+        onChange={setCompanions}
+      />
+      <OptionGroup
+        legend="預算等級"
+        options={BUDGET_OPTIONS}
+        value={budget}
+        onChange={setBudget}
+      />
+      <OptionGroup
+        legend="交通方式"
+        options={TRANSPORT_OPTIONS}
+        value={transport}
+        onChange={setTransport}
+      />
+
+      <fieldset className="space-y-2">
+        <legend className="text-xs font-medium tracking-wide text-[var(--ink-soft)] uppercase">
+          飲食偏好
+        </legend>
+        <div className="flex flex-wrap gap-2">
+          {DIETARY_OPTIONS.map((option) => {
+            const active = dietary.includes(option.id);
+            return (
+              <button
+                key={option.id}
+                type="button"
+                onClick={() => toggleDietary(option.id)}
+                className={cn(
+                  'rounded-lg px-3 py-1.5 text-xs transition sm:text-sm',
+                  active
+                    ? 'bg-[var(--coral)] text-white'
                     : 'bg-white/60 text-[var(--ink-soft)] hover:bg-white',
                 )}
               >

@@ -1,10 +1,11 @@
 import { createClient } from '@supabase/supabase-js';
 
-import type { Database } from '@/types/database';
-
 /**
  * Service-role client for server-side writes that bypass RLS.
  * Never expose this to the browser.
+ *
+ * Note: intentionally untyped at the table level to avoid brittle
+ * hand-written Database generics breaking insert/select inference.
  */
 export function createAdminClient() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -16,7 +17,7 @@ export function createAdminClient() {
     );
   }
 
-  return createClient<Database>(url, serviceRoleKey, {
+  return createClient(url, serviceRoleKey, {
     auth: {
       autoRefreshToken: false,
       persistSession: false,

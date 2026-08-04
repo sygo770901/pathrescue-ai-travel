@@ -42,6 +42,16 @@ npm run dev
 | 3 | `mapService.ts`（Places 校正 + Directions） |
 | 4 | 搜尋表單、行程地圖、SOS、Google Maps 匯出 |
 | 5 | `utils/affiliate.ts`（Klook / KKday / Agoda Deep Link） |
+| PWA | `@ducanh2912/next-pwa`、manifest、離線快取行程 |
+| Share | `/share/[tripId]` 唯讀分享、Dynamic OG、複製分享連結 |
+
+### 分享功能注意
+
+請在 Supabase SQL Editor 再執行：
+
+`supabase/migrations/20260804100000_trip_public_sharing.sql`
+
+這樣 `is_public` 與公開讀取政策才會生效。
 
 ## 主要 API
 

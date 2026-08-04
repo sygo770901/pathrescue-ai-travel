@@ -11,11 +11,17 @@ import {
   validateTripGeneratorResponse,
 } from '@/lib/ai/validators';
 import { checkFreeTierRateLimit } from '@/lib/redis/rateLimiter';
+import { DEFAULT_USER_PROFILE, profileLabel, transportToTravelMode } from '@/lib/travelProfile';
 import {
   enrichScheduleItem,
   enrichScheduleWithRoutes,
 } from '@/services/mapService';
-import type { ItineraryDay, TripGeneratorResponse } from '@/types/database';
+import type {
+  ItineraryDay,
+  TripGeneratorResponse,
+  UserTravelProfile,
+} from '@/types/database';
+import { recalculateDayTimeline } from '@/utils/timeCalculator';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -34,6 +40,7 @@ function buildUserPrompt(input: {
   preferences: string[];
   notes?: string | null;
   locale: string;
+  user_profile: UserTravelProfile;
 }): string {
   const preferenceText =
     input.preferences.length > 0
@@ -47,10 +54,12 @@ function buildUserPrompt(input: {
   return [
     `Create a ${input.total_days}-day travel itinerary.`,
     `Destination: ${input.destination}`,
-    `Traveler preferences: ${preferenceText}`,
-    `Preferred response language for textual fields (trip_title, theme, reason_to_visit): ${input.locale}`,
-    'Include a balanced mix of attractions and food based on preferences.',
-    'Keep consecutive places geographically close.',
+    `Interest tags: ${preferenceText}`,
+    `user_profile: ${JSON.stringify(input.user_profile)}`,
+    `Traveler profile (human readable): ${profileLabel(input.user_profile)}`,
+    `Preferred response language for textual fields: ${input.locale}`,
+    'Include destination_essentials and echo user_profile in the JSON response.',
+    'Keep consecutive places geographically close and respect transport/companions constraints.',
     notesText,
   ]
     .filter(Boolean)
@@ -59,13 +68,22 @@ function buildUserPrompt(input: {
 
 async function enrichTripPayload(
   trip: TripGeneratorResponse,
+  profile: UserTravelProfile,
 ): Promise<TripGeneratorResponse> {
+  const mode = transportToTravelMode(profile.transport);
   const hasMapsKey =
     Boolean(process.env.GOOGLE_MAPS_API_KEY) ||
     Boolean(process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY);
 
   if (!hasMapsKey) {
-    return trip;
+    return {
+      ...trip,
+      user_profile: trip.user_profile ?? profile,
+      itinerary: trip.itinerary.map((day) => ({
+        ...day,
+        schedule: recalculateDayTimeline(day.schedule),
+      })),
+    };
   }
 
   const enrichedDays: ItineraryDay[] = [];
@@ -76,17 +94,17 @@ async function enrichTripPayload(
         enrichScheduleItem(item, trip.destination),
       ),
     );
-    const withRoutes = await enrichScheduleWithRoutes(placeEnriched, 'transit');
-
+    const withRoutes = await enrichScheduleWithRoutes(placeEnriched, mode);
     enrichedDays.push({
       day: day.day,
       theme: day.theme,
-      schedule: withRoutes,
+      schedule: recalculateDayTimeline(withRoutes),
     });
   }
 
   return {
     ...trip,
+    user_profile: trip.user_profile ?? profile,
     itinerary: enrichedDays,
   };
 }
@@ -128,12 +146,15 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    const userProfile = parsed.data.user_profile ?? DEFAULT_USER_PROFILE;
+
     const userPrompt = buildUserPrompt({
       destination: parsed.data.destination,
       total_days: parsed.data.total_days,
       preferences: parsed.data.preferences,
       notes: parsed.data.notes,
       locale: parsed.data.locale,
+      user_profile: userProfile,
     });
 
     const raw = await chatJsonCompletion({
@@ -144,7 +165,7 @@ export async function POST(request: NextRequest) {
 
     const json = parseStrictJson<unknown>(raw);
     const trip = validateTripGeneratorResponse(json);
-    const enriched = await enrichTripPayload(trip);
+    const enriched = await enrichTripPayload(trip, userProfile);
 
     return NextResponse.json(
       {

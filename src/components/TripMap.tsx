@@ -9,13 +9,15 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { cn } from '@/lib/utils';
+import type { NearbyPlace } from '@/services/mapService';
 import type { TripGeneratorResponse } from '@/types/database';
-import { flattenScheduleItems } from '@/utils/googleMapsExport';
+import { flattenScheduleItems } from '@/utils/exportMap';
 
 interface TripMapProps {
   trip: TripGeneratorResponse;
   selectedKey: string | null;
   activeDay: number | 'all';
+  nearbyPlaces?: NearbyPlace[];
   onSelect: (key: string) => void;
 }
 
@@ -226,6 +228,7 @@ function GoogleTripMap({
   markers,
   selectedKey,
   activeDay,
+  nearbyPlaces,
   onSelect,
   apiKey,
 }: {
@@ -233,6 +236,7 @@ function GoogleTripMap({
   markers: MapMarker[];
   selectedKey: string | null;
   activeDay: number | 'all';
+  nearbyPlaces: NearbyPlace[];
   onSelect: (key: string) => void;
   apiKey: string;
 }) {
@@ -320,6 +324,7 @@ function GoogleTripMap({
       lat: selected.latitude,
       lng: selected.longitude,
     });
+    mapRef.current.setZoom(15);
   }, [selectedKey, markers, mapReady]);
 
   if (loadError) {
@@ -406,11 +411,30 @@ function GoogleTripMap({
             />
           );
         })}
+
+        {nearbyPlaces.map((place) => (
+          <MarkerF
+            key={`nearby-${place.place_id}`}
+            position={{ lat: place.latitude, lng: place.longitude }}
+            title={`${place.name}（${place.category}）`}
+            icon={{
+              path: google.maps.SymbolPath.BACKWARD_CLOSED_ARROW,
+              scale: 5,
+              fillColor: '#1d4e89',
+              fillOpacity: 1,
+              strokeColor: '#ffffff',
+              strokeWeight: 1,
+            }}
+            zIndex={500}
+          />
+        ))}
       </GoogleMap>
 
       <div className="pointer-events-none absolute bottom-3 left-3 rounded-lg bg-white/90 px-3 py-1.5 text-xs text-[var(--ink-soft)] shadow-sm">
         {activeDay === 'all' ? '全部天數' : `第 ${activeDay} 天`} ·{' '}
-        {markers.length} 個景點 · Google 實景地圖
+        {markers.length} 個景點
+        {nearbyPlaces.length > 0 ? ` · 順路 ${nearbyPlaces.length} 處` : ''} ·
+        Google 實景地圖
       </div>
 
       <div className="absolute top-3 right-3">
@@ -430,6 +454,7 @@ export function TripMap({
   trip,
   selectedKey,
   activeDay,
+  nearbyPlaces = [],
   onSelect,
 }: TripMapProps) {
   const markers = useTripMarkers(trip, activeDay);
@@ -453,6 +478,7 @@ export function TripMap({
       markers={markers}
       selectedKey={selectedKey}
       activeDay={activeDay}
+      nearbyPlaces={nearbyPlaces}
       onSelect={onSelect}
       apiKey={apiKey}
     />

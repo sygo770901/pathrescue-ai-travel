@@ -1,8 +1,10 @@
-import type { ScheduleItem } from '@/types/database';
-
+import type { ScheduleItem, TravelMode } from '@/types/database';
+import { buildKeywordMapsSearchUrl } from '@/utils/mapsUrl';
 const GOOGLE_PLACES_BASE = 'https://places.googleapis.com/v1';
 const GOOGLE_DIRECTIONS_BASE =
   'https://maps.googleapis.com/maps/api/directions/json';
+const GOOGLE_DISTANCE_MATRIX_BASE =
+  'https://maps.googleapis.com/maps/api/distancematrix/json';
 
 function getServerMapsKey(): string {
   const key =
@@ -43,12 +45,35 @@ export interface RouteLeg {
 export interface RouteResult {
   origin: { latitude: number; longitude: number };
   destination: { latitude: number; longitude: number };
-  mode: 'walking' | 'transit' | 'driving';
+  mode: TravelMode;
   legs: RouteLeg[];
   total_duration_mins: number;
   total_distance_meters: number;
   overview_polyline: string | null;
 }
+
+export interface TransitTimeResult {
+  duration_mins: number;
+  distance_meters: number;
+  mode: TravelMode;
+  summary: string;
+}
+
+export interface NearbyPlace {
+  place_id: string;
+  name: string;
+  category: string;
+  latitude: number;
+  longitude: number;
+  distance_meters?: number;
+  maps_url: string;
+}
+
+export type NearbyFacilityType =
+  | 'convenience_store'
+  | 'atm'
+  | 'drugstore'
+  | 'toilet';
 
 interface PlacesTextSearchResponse {
   places?: Array<{
@@ -176,6 +201,11 @@ export async function enrichScheduleItem(
   item: ScheduleItem,
   destinationHint?: string,
 ): Promise<ScheduleItem> {
+  const fallbackUrl = buildKeywordMapsSearchUrl(
+    item.place_name,
+    destinationHint,
+  );
+
   try {
     const details = await getPlaceDetails(item.place_name, {
       latitude: item.latitude,
@@ -184,7 +214,10 @@ export async function enrichScheduleItem(
     });
 
     if (!details) {
-      return item;
+      return {
+        ...item,
+        maps_search_url: fallbackUrl,
+      };
     }
 
     return {
@@ -195,9 +228,13 @@ export async function enrichScheduleItem(
       place_id: details.place_id,
       photo_url: details.photo_url,
       opening_hours: details.opening_hours,
+      maps_search_url: details.google_maps_uri ?? fallbackUrl,
     };
   } catch {
-    return item;
+    return {
+      ...item,
+      maps_search_url: fallbackUrl,
+    };
   }
 }
 
@@ -207,7 +244,7 @@ export async function enrichScheduleItem(
 export async function calculateRoute(
   origin: { latitude: number; longitude: number },
   destination: { latitude: number; longitude: number },
-  mode: 'walking' | 'transit' | 'driving' = 'transit',
+  mode: TravelMode = 'transit',
 ): Promise<RouteResult> {
   const apiKey = getServerMapsKey();
 
@@ -275,7 +312,7 @@ export async function calculateRoute(
  */
 export async function enrichScheduleWithRoutes(
   schedule: ScheduleItem[],
-  mode: 'walking' | 'transit' | 'driving' = 'transit',
+  mode: TravelMode = 'transit',
 ): Promise<ScheduleItem[]> {
   if (schedule.length === 0) return schedule;
 
@@ -286,7 +323,7 @@ export async function enrichScheduleWithRoutes(
     const current = schedule[i];
 
     try {
-      const route = await calculateRoute(
+      const transit = await getTransitTime(
         { latitude: prev.latitude, longitude: prev.longitude },
         { latitude: current.latitude, longitude: current.longitude },
         mode,
@@ -294,8 +331,8 @@ export async function enrichScheduleWithRoutes(
 
       enriched.push({
         ...current,
-        travel_from_prev_mins: route.total_duration_mins,
-        route_summary: `${route.mode} · ${route.total_duration_mins} 分 · ${Math.round(route.total_distance_meters / 1000 * 10) / 10} km`,
+        travel_from_prev_mins: transit.duration_mins,
+        route_summary: transit.summary,
       });
     } catch {
       enriched.push({
@@ -307,4 +344,159 @@ export async function enrichScheduleWithRoutes(
   }
 
   return enriched;
+}
+
+/**
+ * Estimate travel time between two points via Distance Matrix (fallback Directions).
+ */
+export async function getTransitTime(
+  origin: { latitude: number; longitude: number },
+  destination: { latitude: number; longitude: number },
+  mode: TravelMode = 'transit',
+): Promise<TransitTimeResult> {
+  try {
+    const apiKey = getServerMapsKey();
+    const params = new URLSearchParams({
+      origins: `${origin.latitude},${origin.longitude}`,
+      destinations: `${destination.latitude},${destination.longitude}`,
+      mode,
+      language: 'zh-TW',
+      key: apiKey,
+    });
+
+    const response = await fetch(
+      `${GOOGLE_DISTANCE_MATRIX_BASE}?${params.toString()}`,
+    );
+
+    if (response.ok) {
+      const data = (await response.json()) as {
+        status: string;
+        rows?: Array<{
+          elements?: Array<{
+            status?: string;
+            duration?: { value?: number; text?: string };
+            distance?: { value?: number; text?: string };
+          }>;
+        }>;
+      };
+
+      const element = data.rows?.[0]?.elements?.[0];
+      if (data.status === 'OK' && element?.status === 'OK') {
+        const durationMins = Math.max(
+          1,
+          Math.round((element.duration?.value ?? 60) / 60),
+        );
+        const distanceMeters = element.distance?.value ?? 0;
+        const modeLabel =
+          mode === 'walking' ? '步行' : mode === 'driving' ? '駕車' : '大眾運輸';
+        return {
+          duration_mins: durationMins,
+          distance_meters: distanceMeters,
+          mode,
+          summary: `${modeLabel} ${durationMins} 分鐘`,
+        };
+      }
+    }
+  } catch {
+    // fall through to Directions
+  }
+
+  const route = await calculateRoute(origin, destination, mode);
+  const modeLabel =
+    mode === 'walking' ? '步行' : mode === 'driving' ? '駕車' : '大眾運輸';
+  return {
+    duration_mins: route.total_duration_mins,
+    distance_meters: route.total_distance_meters,
+    mode,
+    summary: `${modeLabel} ${route.total_duration_mins} 分鐘`,
+  };
+}
+
+const NEARBY_TYPE_MAP: Record<
+  NearbyFacilityType,
+  { includedType: string; label: string }
+> = {
+  convenience_store: {
+    includedType: 'convenience_store',
+    label: '超商',
+  },
+  atm: { includedType: 'atm', label: 'ATM' },
+  drugstore: { includedType: 'drugstore', label: '藥妝' },
+  toilet: { includedType: 'public_bathroom', label: '廁所' },
+};
+
+/**
+ * Nearby Search around the midpoint between two schedule points.
+ */
+export async function searchNearbyAlongRoute(
+  from: { latitude: number; longitude: number },
+  to: { latitude: number; longitude: number },
+  facility: NearbyFacilityType,
+  radiusMeters = 600,
+): Promise<NearbyPlace[]> {
+  const apiKey = getServerMapsKey();
+  const mid = {
+    latitude: (from.latitude + to.latitude) / 2,
+    longitude: (from.longitude + to.longitude) / 2,
+  };
+  const meta = NEARBY_TYPE_MAP[facility];
+
+  const response = await fetch(`${GOOGLE_PLACES_BASE}/places:searchNearby`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Goog-Api-Key': apiKey,
+      'X-Goog-FieldMask':
+        'places.id,places.displayName,places.location,places.googleMapsUri,places.types',
+    },
+    body: JSON.stringify({
+      includedTypes: [meta.includedType],
+      maxResultCount: 5,
+      languageCode: 'zh-TW',
+      locationRestriction: {
+        circle: {
+          center: mid,
+          radius: radiusMeters,
+        },
+      },
+    }),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(
+      `Nearby Search failed (${response.status}): ${errorText}`,
+    );
+  }
+
+  const data = (await response.json()) as {
+    places?: Array<{
+      id?: string;
+      displayName?: { text?: string };
+      location?: { latitude?: number; longitude?: number };
+      googleMapsUri?: string;
+      types?: string[];
+    }>;
+  };
+
+  return (data.places ?? [])
+    .map((place) => {
+      const lat = place.location?.latitude;
+      const lng = place.location?.longitude;
+      if (!place.id || typeof lat !== 'number' || typeof lng !== 'number') {
+        return null;
+      }
+      const name = place.displayName?.text ?? meta.label;
+      return {
+        place_id: place.id,
+        name,
+        category: meta.label,
+        latitude: lat,
+        longitude: lng,
+        maps_url:
+          place.googleMapsUri ??
+          buildKeywordMapsSearchUrl(name),
+      } satisfies NearbyPlace;
+    })
+    .filter((p): p is NearbyPlace => p !== null);
 }

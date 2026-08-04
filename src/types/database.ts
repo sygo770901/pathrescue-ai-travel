@@ -33,6 +33,47 @@ export type TravelPreference =
 
 export type AffiliateEventType = 'impression' | 'click' | 'conversion';
 
+/** Deep personalization profile from SearchForm */
+export type TravelPace = 'relaxed' | 'balanced' | 'packed';
+export type TravelCompanion =
+  | 'solo'
+  | 'couple'
+  | 'family_kids'
+  | 'with_elders';
+export type TravelBudget = 'budget' | 'comfort' | 'luxury';
+export type TravelTransport =
+  | 'transit'
+  | 'driving'
+  | 'taxi'
+  | 'walking';
+export type DietaryPreference =
+  | 'vegetarian'
+  | 'no_beef'
+  | 'local_snacks'
+  | 'famous_queues';
+
+export interface UserTravelProfile {
+  pace: TravelPace;
+  companions: TravelCompanion;
+  budget: TravelBudget;
+  transport: TravelTransport;
+  dietary: DietaryPreference[];
+}
+
+export interface DestinationEssentials {
+  currency_code: string;
+  currency_name: string;
+  fx_note: string;
+  plug_type: string;
+  emergency_numbers: {
+    police: string;
+    ambulance: string;
+    notes?: string;
+  };
+}
+
+export type TravelMode = 'walking' | 'transit' | 'driving';
+
 // =============================================================================
 // AI System Prompt JSON structures
 // =============================================================================
@@ -69,6 +110,10 @@ export interface ScheduleItem {
   travel_from_prev_mins?: number | null;
   /** Encoded polyline or summary from Directions API */
   route_summary?: string | null;
+  /** Fallback Google Maps keyword search when Places lookup fails */
+  maps_search_url?: string | null;
+  /** True when data is served from LocalStorage cache */
+  from_cache?: boolean;
 }
 
 /**
@@ -91,6 +136,10 @@ export interface TripGeneratorResponse {
   destination: string;
   total_days: number;
   itinerary: ItineraryDay[];
+  /** Practical destination essentials for travelers */
+  destination_essentials?: DestinationEssentials;
+  /** Echo of personalization used for generation */
+  user_profile?: UserTravelProfile;
 }
 
 /**
@@ -164,7 +213,7 @@ export interface UserUpdate {
 
 export interface Trip {
   id: string;
-  user_id: string;
+  user_id: string | null;
   trip_title: string;
   destination: string;
   total_days: number;
@@ -174,13 +223,15 @@ export interface Trip {
   generated_payload: TripGeneratorResponse | null;
   start_date: string | null;
   notes: string | null;
+  /** When true, trip is readable via /share/[tripId] */
+  is_public: boolean;
   created_at: string;
   updated_at: string;
 }
 
 export interface TripInsert {
   id?: string;
-  user_id: string;
+  user_id?: string | null;
   trip_title: string;
   destination: string;
   total_days: number;
@@ -189,6 +240,7 @@ export interface TripInsert {
   generated_payload?: TripGeneratorResponse | null;
   start_date?: string | null;
   notes?: string | null;
+  is_public?: boolean;
 }
 
 export interface TripUpdate {
@@ -200,6 +252,20 @@ export interface TripUpdate {
   generated_payload?: TripGeneratorResponse | null;
   start_date?: string | null;
   notes?: string | null;
+  is_public?: boolean;
+  user_id?: string | null;
+}
+
+/** Public share payload returned by GET /api/trips/[tripId] */
+export interface PublicTripView {
+  id: string;
+  trip_title: string;
+  destination: string;
+  total_days: number;
+  preferences: TravelPreference[];
+  is_public: boolean;
+  generated_payload: TripGeneratorResponse;
+  created_at: string;
 }
 
 /**
@@ -308,6 +374,46 @@ export type Json =
   | { [key: string]: Json | undefined }
   | Json[];
 
+/** Supabase JSONB-friendly row shapes (avoid custom object types that break client inference) */
+type TripRow = Omit<Trip, 'generated_payload' | 'preferences'> & {
+  preferences: string[];
+  generated_payload: Json | null;
+};
+
+type TripInsertRow = Omit<TripInsert, 'generated_payload' | 'preferences'> & {
+  preferences?: string[];
+  generated_payload?: Json | null;
+};
+
+type TripUpdateRow = Omit<TripUpdate, 'generated_payload' | 'preferences'> & {
+  preferences?: string[];
+  generated_payload?: Json | null;
+};
+
+type ItineraryRow = Omit<Itinerary, 'schedule'> & {
+  schedule: Json;
+};
+
+type ItineraryInsertRow = Omit<ItineraryInsert, 'schedule'> & {
+  schedule?: Json;
+};
+
+type ItineraryUpdateRow = Omit<ItineraryUpdate, 'schedule'> & {
+  schedule?: Json;
+};
+
+type AffiliateLogRow = Omit<AffiliateLog, 'metadata'> & {
+  metadata: Json;
+};
+
+type AffiliateLogInsertRow = Omit<AffiliateLogInsert, 'metadata'> & {
+  metadata?: Json;
+};
+
+type AffiliateLogUpdateRow = Omit<AffiliateLogUpdate, 'metadata'> & {
+  metadata?: Json;
+};
+
 export interface Database {
   public: {
     Tables: {
@@ -315,20 +421,12 @@ export interface Database {
         Row: User;
         Insert: UserInsert;
         Update: UserUpdate;
-        Relationships: [
-          {
-            foreignKeyName: 'users_id_fkey';
-            columns: ['id'];
-            isOneToOne: true;
-            referencedRelation: 'users';
-            referencedColumns: ['id'];
-          },
-        ];
+        Relationships: [];
       };
       trips: {
-        Row: Trip;
-        Insert: TripInsert;
-        Update: TripUpdate;
+        Row: TripRow;
+        Insert: TripInsertRow;
+        Update: TripUpdateRow;
         Relationships: [
           {
             foreignKeyName: 'trips_user_id_fkey';
@@ -340,9 +438,9 @@ export interface Database {
         ];
       };
       itineraries: {
-        Row: Itinerary;
-        Insert: ItineraryInsert;
-        Update: ItineraryUpdate;
+        Row: ItineraryRow;
+        Insert: ItineraryInsertRow;
+        Update: ItineraryUpdateRow;
         Relationships: [
           {
             foreignKeyName: 'itineraries_trip_id_fkey';
@@ -354,9 +452,9 @@ export interface Database {
         ];
       };
       affiliate_logs: {
-        Row: AffiliateLog;
-        Insert: AffiliateLogInsert;
-        Update: AffiliateLogUpdate;
+        Row: AffiliateLogRow;
+        Insert: AffiliateLogInsertRow;
+        Update: AffiliateLogUpdateRow;
         Relationships: [
           {
             foreignKeyName: 'affiliate_logs_user_id_fkey';
