@@ -96,9 +96,40 @@ export function replaceSlotAndRecalculate(
       ? {
           ...replacement,
           travel_from_prev_mins: item.travel_from_prev_mins,
+          status: replacement.status ?? 'pending',
         }
       : item,
   );
 
   return recalculateDayTimeline(next);
+}
+
+/**
+ * Insert a slot after `afterIndex` (-1 = unshift) and recalculate.
+ */
+export function insertSlotAndRecalculate(
+  schedule: ScheduleItem[],
+  afterIndex: number,
+  insertion: ScheduleItem,
+): ScheduleItem[] {
+  const next = [...schedule];
+  const at = Math.min(schedule.length, Math.max(0, afterIndex + 1));
+  next.splice(at, 0, {
+    ...insertion,
+    status: insertion.status ?? 'pending',
+    travel_from_prev_mins: insertion.travel_from_prev_mins ?? 15,
+  });
+  return recalculateDayTimeline(next);
+}
+
+/**
+ * Mark a slot done/skipped and leave timeline as-is.
+ */
+export function setSlotStatus(
+  schedule: ScheduleItem[],
+  index: number,
+  status: NonNullable<ScheduleItem['status']>,
+): ScheduleItem[] {
+  if (index < 0 || index >= schedule.length) return schedule;
+  return schedule.map((item, i) => (i === index ? { ...item, status } : item));
 }

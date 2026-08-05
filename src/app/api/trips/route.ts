@@ -38,6 +38,15 @@ async function replaceItineraries(
   }
 }
 
+function isMissingIsPublicColumn(message: string): boolean {
+  return (
+    message.includes("is_public") &&
+    (message.includes('schema cache') ||
+      message.includes('does not exist') ||
+      message.includes('Could not find'))
+  );
+}
+
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
@@ -57,6 +66,7 @@ export async function POST(request: NextRequest) {
 
     const admin = createAdminClient();
     const { trip, preferences, notes, is_public, trip_id } = parsed.data;
+    let sharingReady = true;
 
     if (trip_id) {
       const { data: existing, error: existingError } = await admin
@@ -77,22 +87,39 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
       }
 
-      const { data: updated, error: updateError } = await admin
+      const updatePayload: Record<string, unknown> = {
+        trip_title: trip.trip_title,
+        destination: trip.destination,
+        total_days: trip.total_days,
+        preferences,
+        notes: notes ?? null,
+        status: 'ready',
+        generated_payload: trip as unknown as Json,
+        user_id: existing.user_id ?? user?.id ?? null,
+        is_public,
+      };
+
+      let { data: updated, error: updateError } = await admin
         .from('trips')
-        .update({
-          trip_title: trip.trip_title,
-          destination: trip.destination,
-          total_days: trip.total_days,
-          preferences,
-          notes: notes ?? null,
-          status: 'ready',
-          generated_payload: trip as unknown as Json,
-          is_public,
-          user_id: existing.user_id ?? user?.id ?? null,
-        })
+        .update(updatePayload)
         .eq('id', trip_id)
         .select('id, is_public')
         .single();
+
+      if (updateError && isMissingIsPublicColumn(updateError.message)) {
+        sharingReady = false;
+        delete updatePayload.is_public;
+        const retry = await admin
+          .from('trips')
+          .update(updatePayload)
+          .eq('id', trip_id)
+          .select('id')
+          .single();
+        updated = retry.data
+          ? { id: retry.data.id, is_public: false }
+          : null;
+        updateError = retry.error;
+      }
 
       if (updateError || !updated) {
         throw new Error(updateError?.message ?? 'Failed to update trip');
@@ -101,7 +128,11 @@ export async function POST(request: NextRequest) {
       await replaceItineraries(admin, updated.id, trip);
 
       return NextResponse.json({
-        data: { id: updated.id, is_public: updated.is_public },
+        data: {
+          id: updated.id,
+          is_public: Boolean(updated.is_public),
+          sharing_ready: sharingReady,
+        },
       });
     }
 
@@ -117,11 +148,28 @@ export async function POST(request: NextRequest) {
       is_public,
     };
 
-    const { data: created, error: insertError } = await admin
+    let { data: created, error: insertError } = await admin
       .from('trips')
       .insert(insertPayload)
       .select('id, is_public')
       .single();
+
+    if (insertError && isMissingIsPublicColumn(insertError.message)) {
+      sharingReady = false;
+      const withoutPublic: Omit<TripInsert, 'is_public'> & {
+        is_public?: boolean;
+      } = { ...insertPayload };
+      delete withoutPublic.is_public;
+      const retry = await admin
+        .from('trips')
+        .insert(withoutPublic)
+        .select('id')
+        .single();
+      created = retry.data
+        ? { id: retry.data.id, is_public: false }
+        : null;
+      insertError = retry.error;
+    }
 
     if (insertError || !created) {
       throw new Error(insertError?.message ?? 'Failed to save trip');
@@ -130,13 +178,27 @@ export async function POST(request: NextRequest) {
     await replaceItineraries(admin, created.id, trip);
 
     return NextResponse.json(
-      { data: { id: created.id, is_public: created.is_public } },
+      {
+        data: {
+          id: created.id,
+          is_public: Boolean(created.is_public),
+          sharing_ready: sharingReady,
+        },
+      },
       { status: 201 },
     );
   } catch (error) {
     const message =
       error instanceof Error ? error.message : 'Unknown server error';
     console.error('[trips POST]', error);
-    return NextResponse.json({ error: message }, { status: 500 });
+    return NextResponse.json(
+      {
+        error: message,
+        hint: message.includes('is_public')
+          ? '請在 Supabase SQL Editor 執行 supabase/migrations/20260804100000_trip_public_sharing.sql'
+          : undefined,
+      },
+      { status: 500 },
+    );
   }
 }

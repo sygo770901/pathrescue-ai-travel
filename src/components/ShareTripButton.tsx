@@ -4,6 +4,7 @@ import { useState } from 'react';
 
 import type { TripGeneratorResponse } from '@/types/database';
 import { saveTripToCache } from '@/lib/offline/tripCache';
+import { buildLocalShareUrl } from '@/utils/shareCodec';
 
 interface ShareTripButtonProps {
   trip: TripGeneratorResponse;
@@ -20,38 +21,37 @@ export function ShareTripButton({
 }: ShareTripButtonProps) {
   const [loading, setLoading] = useState(false);
 
-  async function ensureSavedTripId(): Promise<string> {
-    if (tripId) return tripId;
-
-    const response = await fetch('/api/trips', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        trip,
-        is_public: true,
-      }),
-    });
-
-    const json = (await response.json()) as {
-      data?: { id: string; is_public: boolean };
-      error?: string;
-    };
-
-    if (!response.ok || !json.data) {
-      throw new Error(json.error ?? '儲存行程失敗');
-    }
-
-    onTripIdChange(json.data.id);
-    saveTripToCache(json.data.id, trip, { isPublic: true });
-    return json.data.id;
-  }
-
-  async function handleShare() {
-    if (loading) return;
-    setLoading(true);
-
+  async function tryCloudShare(): Promise<string | null> {
     try {
-      const id = await ensureSavedTripId();
+      let id = tripId;
+
+      if (!id || id.startsWith('local-')) {
+        const response = await fetch('/api/trips', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            trip,
+            is_public: true,
+          }),
+        });
+
+        const json = (await response.json()) as {
+          data?: { id: string; is_public: boolean; sharing_ready?: boolean };
+          error?: string;
+        };
+
+        if (!response.ok || !json.data) {
+          throw new Error(json.error ?? '儲存行程失敗');
+        }
+
+        id = json.data.id;
+        onTripIdChange(id);
+        saveTripToCache(id, trip, { isPublic: true });
+
+        if (json.data.sharing_ready === false) {
+          return null;
+        }
+      }
 
       const publish = await fetch(`/api/trips/${id}/share`, {
         method: 'POST',
@@ -66,11 +66,32 @@ export function ShareTripButton({
         throw new Error(publishJson.error ?? '產生分享連結失敗');
       }
 
-      const shareUrl = publishJson.data.share_url;
       saveTripToCache(id, trip, { isPublic: true });
+      return publishJson.data.share_url;
+    } catch {
+      return null;
+    }
+  }
+
+  async function handleShare() {
+    if (loading) return;
+    setLoading(true);
+
+    try {
+      const cloudUrl = await tryCloudShare();
+      const shareUrl =
+        cloudUrl ??
+        buildLocalShareUrl(window.location.origin, trip);
 
       await navigator.clipboard.writeText(shareUrl);
-      onToast('分享連結已複製到剪貼簿');
+
+      if (cloudUrl) {
+        onToast('分享連結已複製到剪貼簿');
+      } else {
+        onToast(
+          '雲端分享未就緒，已改複製本機分享連結（對方開啟同一連結即可看）',
+        );
+      }
     } catch (error) {
       onToast(error instanceof Error ? error.message : '分享失敗');
     } finally {

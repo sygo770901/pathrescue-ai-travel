@@ -41,6 +41,7 @@ function buildUserPrompt(input: {
   notes?: string | null;
   locale: string;
   user_profile: UserTravelProfile;
+  start_date?: string | null;
 }): string {
   const preferenceText =
     input.preferences.length > 0
@@ -51,9 +52,15 @@ function buildUserPrompt(input: {
     ? `\nAdditional notes from traveler: ${input.notes.trim()}`
     : '';
 
+  const startDateText = input.start_date
+    ? `Trip start_date: ${input.start_date} (align weekday-sensitive tips when relevant).`
+    : '';
+
   return [
     `Create a ${input.total_days}-day travel itinerary.`,
+    `CRITICAL: itinerary array MUST contain exactly ${input.total_days} day objects (day 1 through day ${input.total_days}). Do NOT stop after day 1.`,
     `Destination: ${input.destination}`,
+    startDateText,
     `Interest tags: ${preferenceText}`,
     `user_profile: ${JSON.stringify(input.user_profile)}`,
     `Traveler profile (human readable): ${profileLabel(input.user_profile)}`,
@@ -64,6 +71,65 @@ function buildUserPrompt(input: {
   ]
     .filter(Boolean)
     .join('\n');
+}
+
+function normalizeDayCount(
+  trip: TripGeneratorResponse,
+  requestedDays: number,
+): TripGeneratorResponse {
+  const sorted = [...trip.itinerary].sort((a, b) => a.day - b.day);
+  const capped = sorted.slice(0, requestedDays).map((day, index) => ({
+    ...day,
+    day: index + 1,
+  }));
+
+  return {
+    ...trip,
+    total_days: requestedDays,
+    itinerary: capped,
+  };
+}
+
+async function ensureFullDayCount(
+  trip: TripGeneratorResponse,
+  requestedDays: number,
+  baseUserPrompt: string,
+): Promise<TripGeneratorResponse> {
+  let current = normalizeDayCount(trip, requestedDays);
+
+  if (current.itinerary.length >= requestedDays) {
+    return current;
+  }
+
+  console.warn(
+    `[generate-trip] Incomplete itinerary: got ${current.itinerary.length}/${requestedDays} days, retrying once`,
+  );
+
+  const retryPrompt = [
+    baseUserPrompt,
+    '',
+    `RETRY REQUIRED: Your previous JSON only included ${current.itinerary.length} day(s).`,
+    `Return a COMPLETE fresh JSON with exactly ${requestedDays} days in itinerary (day 1..${requestedDays}).`,
+    'Each day needs a realistic full schedule (morning/lunch/afternoon/evening as appropriate).',
+  ].join('\n');
+
+  const raw = await chatJsonCompletion({
+    systemPrompt: TRIP_GENERATOR_SYSTEM_PROMPT,
+    userPrompt: retryPrompt,
+    temperature: 0.55,
+  });
+
+  const json = parseStrictJson<unknown>(raw);
+  const retried = validateTripGeneratorResponse(json);
+  current = normalizeDayCount(retried, requestedDays);
+
+  if (current.itinerary.length < requestedDays) {
+    throw new Error(
+      `行程天數不足：只產生了 ${current.itinerary.length} 天，但要求 ${requestedDays} 天。請再試一次。`,
+    );
+  }
+
+  return current;
 }
 
 async function enrichTripPayload(
@@ -147,6 +213,7 @@ export async function POST(request: NextRequest) {
     }
 
     const userProfile = parsed.data.user_profile ?? DEFAULT_USER_PROFILE;
+    const startDate = parsed.data.start_date ?? null;
 
     const userPrompt = buildUserPrompt({
       destination: parsed.data.destination,
@@ -155,6 +222,7 @@ export async function POST(request: NextRequest) {
       notes: parsed.data.notes,
       locale: parsed.data.locale,
       user_profile: userProfile,
+      start_date: startDate,
     });
 
     const raw = await chatJsonCompletion({
@@ -165,13 +233,29 @@ export async function POST(request: NextRequest) {
 
     const json = parseStrictJson<unknown>(raw);
     const trip = validateTripGeneratorResponse(json);
-    const enriched = await enrichTripPayload(trip, userProfile);
+    const fullDays = await ensureFullDayCount(
+      trip,
+      parsed.data.total_days,
+      userPrompt,
+    );
+    const enriched = await enrichTripPayload(fullDays, userProfile);
+    const withStartDate: TripGeneratorResponse = {
+      ...enriched,
+      total_days: parsed.data.total_days,
+      start_date: startDate ?? enriched.start_date ?? null,
+    };
+
+    console.info(
+      `[generate-trip] days=${withStartDate.itinerary.length}/${parsed.data.total_days}`,
+    );
 
     return NextResponse.json(
       {
-        data: enriched,
+        data: withStartDate,
         meta: {
           ...getAiRuntimeInfo(),
+          day_count: withStartDate.itinerary.length,
+          requested_days: parsed.data.total_days,
           rate_limit: {
             limit: rate.limit,
             remaining: rate.remaining,

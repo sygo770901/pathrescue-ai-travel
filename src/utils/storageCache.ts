@@ -46,7 +46,15 @@ export function savePlaceDetailsCache(
     window.localStorage.setItem(key, JSON.stringify(record));
     trimPlaceCache();
   } catch {
-    // quota / private mode — ignore
+    // quota / private mode — purge place cache and give up quietly
+    try {
+      const keys = Object.keys(window.localStorage).filter((k) =>
+        k.startsWith(PLACE_PREFIX),
+      );
+      for (const k of keys) window.localStorage.removeItem(k);
+    } catch {
+      // ignore
+    }
   }
 }
 

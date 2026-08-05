@@ -5,12 +5,16 @@ import { useSearchParams } from 'next/navigation';
 
 import { DestinationInfoCard } from '@/components/DestinationInfoCard';
 import { ExportMapsButton } from '@/components/ExportMapsButton';
+import { GenerationProgress } from '@/components/GenerationProgress';
 import {
   ItineraryBottomSheet,
   type SheetSnap,
 } from '@/components/ItineraryBottomSheet';
 import { ItineraryPanel } from '@/components/ItineraryPanel';
+import { ModeToggle } from '@/components/ModeToggle';
 import { OfflineBanner } from '@/components/OfflineBanner';
+import { OnTripFocusCard } from '@/components/OnTripFocusCard';
+import { RegenerateSlotModal } from '@/components/RegenerateSlotModal';
 import { RescuePanel } from '@/components/RescuePanel';
 import { SearchForm, type SearchFormValues } from '@/components/SearchForm';
 import { ShareTripButton } from '@/components/ShareTripButton';
@@ -26,16 +30,30 @@ import {
   DEFAULT_USER_PROFILE,
   transportToTravelMode,
 } from '@/lib/travelProfile';
+import {
+  findNextFocusSlot,
+  getTodayTripDay,
+  loadModeOverride,
+  resolveAppTripMode,
+  saveModeOverride,
+  type ModeOverride,
+} from '@/lib/tripMode';
 import type { NearbyFacilityType, NearbyPlace } from '@/services/mapService';
 import type {
+  RescueAlternativePlace,
+  RescueModeResponse,
   ScheduleItem,
   TravelMode,
   TripGeneratorResponse,
   UserTravelProfile,
-  RescueModeResponse,
 } from '@/types/database';
 import { toFocusTarget, type PlaceFocusTarget } from '@/utils/placeKey';
-import { replaceSlotAndRecalculate } from '@/utils/timeCalculator';
+import { rescuePlaceToScheduleItem } from '@/utils/rescueApply';
+import {
+  insertSlotAndRecalculate,
+  replaceSlotAndRecalculate,
+  setSlotStatus,
+} from '@/utils/timeCalculator';
 
 const FACILITY_LABEL: Record<NearbyFacilityType, string> = {
   convenience_store: '超商',
@@ -51,11 +69,13 @@ export function TripPlannerApp() {
   const [trip, setTrip] = useState<TripGeneratorResponse | null>(null);
   const [tripId, setTripId] = useState<string | null>(null);
   const [rescue, setRescue] = useState<RescueModeResponse | null>(null);
+  const [showRescueForm, setShowRescueForm] = useState(false);
   const [activeDay, setActiveDay] = useState<number | 'all'>('all');
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [focusTarget, setFocusTarget] = useState<PlaceFocusTarget | null>(null);
   const [hoverKey, setHoverKey] = useState<string | null>(null);
   const [sheetSnap, setSheetSnap] = useState<SheetSnap>('half');
+  const [modeOverride, setModeOverride] = useState<ModeOverride>('auto');
   const [offline, setOffline] = useState(false);
   const [usingCache, setUsingCache] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
@@ -63,6 +83,41 @@ export function TripPlannerApp() {
     useState<UserTravelProfile>(DEFAULT_USER_PROFILE);
   const [nearbyPlaces, setNearbyPlaces] = useState<NearbyPlace[]>([]);
   const [exploring, setExploring] = useState(false);
+  const [regenFocusOpen, setRegenFocusOpen] = useState(false);
+
+  const travelMode: TravelMode = useMemo(
+    () =>
+      transportToTravelMode(
+        trip?.user_profile?.transport ?? userProfile.transport,
+      ),
+    [trip?.user_profile?.transport, userProfile.transport],
+  );
+
+  const appMode = useMemo(
+    () => resolveAppTripMode(trip, modeOverride),
+    [trip, modeOverride],
+  );
+
+  const todayDay = useMemo(
+    () => (trip ? getTodayTripDay(trip) : null),
+    [trip],
+  );
+
+  const onTripDay = useMemo(() => {
+    if (appMode !== 'ontrip' || !trip) return null;
+    return todayDay ?? trip.itinerary[0]?.day ?? 1;
+  }, [appMode, todayDay, trip]);
+
+  const focusSlot = useMemo(() => {
+    if (!trip || onTripDay == null) return null;
+    return findNextFocusSlot(trip, onTripDay);
+  }, [trip, onTripDay]);
+
+  const canAutoOnTrip = todayDay !== null;
+
+  const showToast = useCallback((message: string) => {
+    setToast(message);
+  }, []);
 
   const handleSelectPlace = useCallback(
     (key: string, target: PlaceFocusTarget) => {
@@ -73,32 +128,57 @@ export function TripPlannerApp() {
     [],
   );
 
-  const travelMode: TravelMode = useMemo(
-    () =>
-      transportToTravelMode(
-        trip?.user_profile?.transport ?? userProfile.transport,
-      ),
-    [trip?.user_profile?.transport, userProfile.transport],
-  );
-
-  const showToast = useCallback((message: string) => {
-    setToast(message);
+  const handleModeOverride = useCallback((next: ModeOverride) => {
+    setModeOverride(next);
+    saveModeOverride(next);
+    if (next === 'planning') setSheetSnap('half');
+    if (next === 'ontrip') setSheetSnap('mapFocus');
   }, []);
+
+  useEffect(() => {
+    setModeOverride(loadModeOverride());
+    // Soft prune on boot — keep newest trips only
+    try {
+      const latest = getLatestCachedTrip();
+      if (latest?.tripId) {
+        saveTripToCache(latest.tripId, latest.trip, {
+          isPublic: latest.isPublic,
+        });
+      }
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  useEffect(() => {
+    if (appMode === 'ontrip' && onTripDay != null) {
+      setActiveDay(onTripDay);
+      setSheetSnap((prev) => (prev === 'full' ? prev : 'mapFocus'));
+    }
+  }, [appMode, onTripDay]);
 
   const applyTrip = useCallback(
     (nextTrip: TripGeneratorResponse, nextTripId?: string | null) => {
       setTrip(nextTrip);
       setTripId(nextTripId ?? null);
-      setActiveDay('all');
       setNearbyPlaces([]);
       setHoverKey(null);
-      setSheetSnap('half');
+      setRescue(null);
+      setShowRescueForm(false);
+
+      const autoDay = getTodayTripDay(nextTrip);
+      if (autoDay != null) {
+        setActiveDay(autoDay);
+        setSheetSnap('mapFocus');
+      } else {
+        setActiveDay('all');
+        setSheetSnap('half');
+      }
 
       const firstDay = nextTrip.itinerary[0];
       const firstItem = firstDay?.schedule[0];
       if (firstDay && firstItem) {
-        const target = toFocusTarget(firstDay.day, 0, firstItem);
-        setSelectedKey(target.key);
+        setSelectedKey(toFocusTarget(firstDay.day, 0, firstItem).key);
         setFocusTarget(null);
       } else {
         setSelectedKey(null);
@@ -113,10 +193,7 @@ export function TripPlannerApp() {
   );
 
   useEffect(() => {
-    const updateOnline = () => {
-      setOffline(isBrowserOffline());
-    };
-
+    const updateOnline = () => setOffline(isBrowserOffline());
     updateOnline();
     window.addEventListener('online', updateOnline);
     window.addEventListener('offline', updateOnline);
@@ -140,9 +217,7 @@ export function TripPlannerApp() {
         cached.tripId.startsWith('local-') ? null : cached.tripId,
       );
       setUsingCache(true);
-      if (isBrowserOffline()) {
-        setOffline(true);
-      }
+      if (isBrowserOffline()) setOffline(true);
     }
   }, [applyTrip, searchParams]);
 
@@ -210,6 +285,7 @@ export function TripPlannerApp() {
         body: JSON.stringify({
           destination: values.destination,
           total_days: values.total_days,
+          start_date: values.start_date,
           preferences: values.preferences,
           notes: values.notes || null,
           locale: 'zh-TW',
@@ -226,27 +302,53 @@ export function TripPlannerApp() {
         throw new Error(json.error ?? '行程生成失敗');
       }
 
-      const savedId = await persistTrip(json.data);
-      applyTrip(json.data, savedId);
-      showToast('行程已生成，並快取到本機');
+      const withDate: TripGeneratorResponse = {
+        ...json.data,
+        start_date: json.data.start_date ?? values.start_date,
+      };
+
+      const savedId = await persistTrip(withDate);
+      applyTrip(withDate, savedId);
+      showToast(
+        `行程已生成：${withDate.itinerary.length} 天（共 ${withDate.total_days} 天）`,
+      );
     } catch (err) {
       const cached = getLatestCachedTrip();
+      const rawMessage =
+        err instanceof Error ? err.message : '行程生成失敗';
+      const friendly = /quota|exceeded|setItem/i.test(rawMessage)
+        ? '本機暫存空間不足，已自動清理；請再按一次生成'
+        : rawMessage;
+
       if (cached) {
         applyTrip(
           cached.trip,
           cached.tripId.startsWith('local-') ? null : cached.tripId,
         );
         setUsingCache(true);
-        setError(
-          `${err instanceof Error ? err.message : '行程生成失敗'}；已改顯示快取資料`,
-        );
+        setError(`${friendly}；已改顯示快取資料`);
       } else {
-        setError(err instanceof Error ? err.message : '行程生成失敗');
+        setError(friendly);
       }
     } finally {
       setLoading(false);
     }
   }
+
+  const updateTripDays = useCallback(
+    async (
+      mutator: (current: TripGeneratorResponse) => TripGeneratorResponse,
+      toastMsg?: string,
+    ) => {
+      if (!trip) return;
+      const nextTrip = mutator(trip);
+      setTrip(nextTrip);
+      const savedId = await persistTrip(nextTrip);
+      if (savedId) setTripId(savedId);
+      if (toastMsg) showToast(toastMsg);
+    },
+    [persistTrip, showToast, trip],
+  );
 
   const handleReplaceSlot = useCallback(
     async (
@@ -255,33 +357,93 @@ export function TripPlannerApp() {
       replacement: ScheduleItem,
       why: string,
     ) => {
+      await updateTripDays(
+        (current) => ({
+          ...current,
+          itinerary: current.itinerary.map((d) =>
+            d.day !== day
+              ? d
+              : {
+                  ...d,
+                  schedule: replaceSlotAndRecalculate(
+                    d.schedule,
+                    index,
+                    replacement,
+                  ),
+                },
+          ),
+        }),
+        why ? `已替換：${why}` : `已替換為 ${replacement.place_name}`,
+      );
+      setFocusTarget(toFocusTarget(day, index, replacement));
+      setSelectedKey(toFocusTarget(day, index, replacement).key);
+      setNearbyPlaces([]);
+    },
+    [updateTripDays],
+  );
+
+  const applyRescuePlace = useCallback(
+    async (place: RescueAlternativePlace, mode: 'replace' | 'insert') => {
       if (!trip) return;
 
-      const nextItinerary = trip.itinerary.map((d) => {
-        if (d.day !== day) return d;
-        return {
-          ...d,
-          schedule: replaceSlotAndRecalculate(d.schedule, index, replacement),
-        };
+      const target =
+        focusSlot ??
+        (typeof activeDay === 'number'
+          ? findNextFocusSlot(trip, activeDay)
+          : trip.itinerary[0]
+            ? findNextFocusSlot(trip, trip.itinerary[0].day)
+            : null);
+
+      if (!target) {
+        showToast('找不到可替換的景點');
+        return;
+      }
+
+      const template = target.item;
+      const slot = rescuePlaceToScheduleItem(place, {
+        time_slot: template.time_slot,
+        estimated_stay_mins: template.estimated_stay_mins,
+        travel_from_prev_mins: template.travel_from_prev_mins ?? 15,
       });
 
-      const nextTrip: TripGeneratorResponse = {
-        ...trip,
-        itinerary: nextItinerary,
-        user_profile: trip.user_profile ?? userProfile,
-      };
+      await updateTripDays(
+        (current) => ({
+          ...current,
+          itinerary: current.itinerary.map((d) => {
+            if (d.day !== target.day) return d;
+            const schedule =
+              mode === 'replace'
+                ? replaceSlotAndRecalculate(d.schedule, target.index, slot)
+                : insertSlotAndRecalculate(d.schedule, target.index, slot);
+            return { ...d, schedule };
+          }),
+        }),
+        mode === 'replace'
+          ? `已取代為 ${place.place_name}`
+          : `已插入 ${place.place_name}`,
+      );
 
-      setTrip(nextTrip);
-      const target = toFocusTarget(day, index, replacement);
-      setSelectedKey(target.key);
-      setFocusTarget(target);
+      setRescue(null);
+      setShowRescueForm(false);
       setNearbyPlaces([]);
-      const savedId = await persistTrip(nextTrip);
-      if (savedId) setTripId(savedId);
-      showToast(why ? `已替換：${why}` : `已替換為 ${replacement.place_name}`);
     },
-    [persistTrip, showToast, trip, userProfile],
+    [activeDay, focusSlot, showToast, trip, updateTripDays],
   );
+
+  const handleCheckIn = useCallback(async () => {
+    if (!trip || !focusSlot) return;
+    await updateTripDays((current) => ({
+      ...current,
+      itinerary: current.itinerary.map((d) =>
+        d.day !== focusSlot.day
+          ? d
+          : {
+              ...d,
+              schedule: setSlotStatus(d.schedule, focusSlot.index, 'done'),
+            },
+      ),
+    }), `已打卡：${focusSlot.item.place_name}`);
+  }, [focusSlot, trip, updateTripDays]);
 
   const handleExploreBetween = useCallback(
     async (
@@ -303,14 +465,8 @@ export function TripPlannerApp() {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            from: {
-              latitude: from.latitude,
-              longitude: from.longitude,
-            },
-            to: {
-              latitude: to.latitude,
-              longitude: to.longitude,
-            },
+            from: { latitude: from.latitude, longitude: from.longitude },
+            to: { latitude: to.latitude, longitude: to.longitude },
             facility,
           }),
         });
@@ -341,43 +497,86 @@ export function TripPlannerApp() {
     [exploring, showToast, trip],
   );
 
+  const itineraryProps = trip
+    ? {
+        days: trip.itinerary,
+        activeDay,
+        selectedKey,
+        destination: trip.destination,
+        userProfile: trip.user_profile ?? userProfile,
+        travelMode,
+        onSelectDay: (day: number | 'all') => {
+          setActiveDay(day);
+          setNearbyPlaces([]);
+          setFocusTarget(null);
+          if (appMode === 'planning') setSheetSnap('half');
+        },
+        onSelectPlace: handleSelectPlace,
+        onHoverPlace: setHoverKey,
+        onReplaceSlot: handleReplaceSlot,
+        onExploreBetween:
+          appMode === 'planning' ? handleExploreBetween : undefined,
+      }
+    : null;
+
   return (
     <div className="mx-auto flex min-h-screen w-full max-w-7xl flex-col px-4 py-6 sm:px-6 lg:px-8">
       <OfflineBanner offline={offline || (usingCache && Boolean(error))} />
 
-      <header className="animate-rise mb-8 max-w-2xl">
+      <header className="animate-rise mb-6 max-w-2xl">
         <p className="text-sm font-medium tracking-[0.18em] text-[var(--sea)] uppercase">
-          PathRescue
+          PathRescue 2.0
         </p>
         <h1 className="font-display mt-2 text-4xl leading-tight text-[var(--ink)] sm:text-5xl">
-          AI 智慧旅遊導航與救援
+          {appMode === 'ontrip' && trip
+            ? '今日導航員'
+            : 'AI 智慧旅遊導航與救援'}
         </h1>
         <p className="mt-3 max-w-xl text-base text-[var(--ink-soft)]">
-          依偏好生成可落地的行程，用地圖校正真實景點，現場突發狀況一鍵重排備案。也可加入主畫面，離線查看快取行程。
+          {appMode === 'ontrip'
+            ? '聚焦下一站、一鍵導航，突發狀況可現場救援並寫回行程。'
+            : '三欄搞定行程：目的地、天數、出發日。進階偏好可選，旅途中自動切換出行模式。'}
         </p>
       </header>
 
-      <div className="grid flex-1 gap-6 lg:grid-cols-[380px_minmax(0,1fr)]">
-        <aside className="space-y-5">
-          <div className="rounded-2xl border border-[var(--line)] bg-white/50 p-5 backdrop-blur-sm">
-            <SearchForm loading={loading} onSubmit={handleGenerate} />
-            {error && (
-              <p className="mt-4 rounded-lg bg-[rgba(180,35,24,0.08)] px-3 py-2 text-sm text-[var(--danger)]">
-                {error}
-              </p>
+      <div
+        className={
+          appMode === 'ontrip' && trip
+            ? 'grid flex-1 gap-6'
+            : 'grid flex-1 gap-6 lg:grid-cols-[380px_minmax(0,1fr)]'
+        }
+      >
+        {(appMode === 'planning' || !trip) && (
+          <aside className="space-y-5">
+            <div className="rounded-2xl border border-[var(--line)] bg-white/50 p-5 backdrop-blur-sm">
+              <SearchForm loading={loading} onSubmit={handleGenerate} />
+              <GenerationProgress active={loading} />
+              {error && (
+                <p className="mt-4 rounded-lg bg-[rgba(180,35,24,0.08)] px-3 py-2 text-sm text-[var(--danger)]">
+                  {error}
+                </p>
+              )}
+            </div>
+
+            {trip && (
+              <>
+                <SosButton
+                  onRescue={(payload) => {
+                    setRescue(payload);
+                    setError(null);
+                  }}
+                  onError={(message) => setError(message)}
+                />
+                <RescuePanel
+                  rescue={rescue}
+                  onReplaceCurrent={(place) => applyRescuePlace(place, 'replace')}
+                  onInsertNext={(place) => applyRescuePlace(place, 'insert')}
+                  onDismiss={() => setRescue(null)}
+                />
+              </>
             )}
-          </div>
-
-          <SosButton
-            onRescue={(payload) => {
-              setRescue(payload);
-              setError(null);
-            }}
-            onError={(message) => setError(message)}
-          />
-
-          <RescuePanel rescue={rescue} />
-        </aside>
+          </aside>
+        )}
 
         <main className="min-h-[70vh]">
           {!trip ? (
@@ -387,7 +586,7 @@ export function TripPlannerApp() {
                   先選一個城市
                 </h2>
                 <p className="mt-2 text-[var(--ink-soft)]">
-                  生成後會在這裡展開路線地圖與每日行程卡片，點擊卡片可高亮對應標記。
+                  填目的地、天數、出發日，一鍵生成後即可規劃或直接出行。
                 </p>
               </div>
             </div>
@@ -396,7 +595,9 @@ export function TripPlannerApp() {
               <div className="flex flex-wrap items-end justify-between gap-3">
                 <div>
                   <p className="text-xs tracking-wide text-[var(--ink-soft)] uppercase">
-                    {trip.destination} · {trip.total_days} 天
+                    {trip.destination} · {trip.itinerary.length}/
+                    {trip.total_days} 天
+                    {trip.start_date ? ` · 出發 ${trip.start_date}` : ''}
                     {tripId ? ` · #${tripId.slice(0, 8)}` : ''}
                   </p>
                   <h2 className="font-display text-3xl text-[var(--ink)]">
@@ -404,20 +605,83 @@ export function TripPlannerApp() {
                   </h2>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
-                  <ShareTripButton
-                    trip={trip}
-                    tripId={tripId}
-                    onTripIdChange={setTripId}
-                    onToast={showToast}
+                  <ModeToggle
+                    mode={appMode}
+                    override={modeOverride}
+                    canAutoOnTrip={canAutoOnTrip}
+                    onChange={handleModeOverride}
                   />
-                  <ExportMapsButton trip={trip} travelMode={travelMode} />
+                  {appMode === 'planning' && (
+                    <>
+                      <ShareTripButton
+                        trip={trip}
+                        tripId={tripId}
+                        onTripIdChange={setTripId}
+                        onToast={showToast}
+                      />
+                      <ExportMapsButton trip={trip} travelMode={travelMode} />
+                    </>
+                  )}
                 </div>
               </div>
 
-              <DestinationInfoCard
-                destination={trip.destination}
-                essentials={trip.destination_essentials}
-              />
+              {appMode === 'planning' && (
+                <DestinationInfoCard
+                  destination={trip.destination}
+                  essentials={trip.destination_essentials}
+                />
+              )}
+
+              {appMode === 'ontrip' && onTripDay != null && (
+                <OnTripFocusCard
+                  dayNumber={onTripDay}
+                  startDate={trip.start_date}
+                  focus={focusSlot}
+                  travelMode={travelMode}
+                  onNavigate={() => {
+                    if (!focusSlot) return;
+                    const target = toFocusTarget(
+                      focusSlot.day,
+                      focusSlot.index,
+                      focusSlot.item,
+                    );
+                    handleSelectPlace(target.key, target);
+                  }}
+                  onCheckIn={handleCheckIn}
+                  onRegenerate={() => setRegenFocusOpen(true)}
+                  onRescue={() => {
+                    setShowRescueForm(true);
+                    setSheetSnap('half');
+                  }}
+                />
+              )}
+
+              {appMode === 'ontrip' && showRescueForm && (
+                <div className="space-y-3">
+                  <SosButton
+                    onRescue={(payload) => {
+                      setRescue(payload);
+                      setError(null);
+                    }}
+                    onError={(message) => {
+                      setError(message);
+                      showToast(message);
+                    }}
+                  />
+                  <RescuePanel
+                    rescue={rescue}
+                    compact
+                    onReplaceCurrent={(place) =>
+                      applyRescuePlace(place, 'replace')
+                    }
+                    onInsertNext={(place) => applyRescuePlace(place, 'insert')}
+                    onDismiss={() => {
+                      setRescue(null);
+                      setShowRescueForm(false);
+                    }}
+                  />
+                </div>
+              )}
 
               <div className="relative min-h-[70vh] flex-1 lg:grid lg:min-h-0 lg:grid-cols-[minmax(0,1.15fr)_minmax(320px,0.85fr)] lg:gap-4">
                 <div className="h-[70vh] min-h-[320px] lg:h-auto lg:min-h-[480px]">
@@ -426,63 +690,66 @@ export function TripPlannerApp() {
                     selectedKey={selectedKey}
                     highlightKey={hoverKey}
                     focusTarget={focusTarget}
-                    activeDay={activeDay}
+                    activeDay={
+                      appMode === 'ontrip' && onTripDay != null
+                        ? onTripDay
+                        : activeDay
+                    }
                     nearbyPlaces={nearbyPlaces}
                     onSelect={handleSelectPlace}
                   />
                 </div>
 
-                {/* Desktop side panel */}
                 <div className="hidden min-h-[360px] rounded-2xl border border-[var(--line)] bg-white/50 p-4 backdrop-blur-sm lg:block xl:min-h-0">
-                  <ItineraryPanel
-                    days={trip.itinerary}
-                    activeDay={activeDay}
-                    selectedKey={selectedKey}
-                    destination={trip.destination}
-                    userProfile={trip.user_profile ?? userProfile}
-                    travelMode={travelMode}
-                    onSelectDay={(day) => {
-                      setActiveDay(day);
-                      setNearbyPlaces([]);
-                      setFocusTarget(null);
-                    }}
-                    onSelectPlace={handleSelectPlace}
-                    onHoverPlace={setHoverKey}
-                    onReplaceSlot={handleReplaceSlot}
-                    onExploreBetween={handleExploreBetween}
-                  />
+                  {itineraryProps && <ItineraryPanel {...itineraryProps} />}
                 </div>
 
-                {/* Mobile bottom sheet */}
                 <ItineraryBottomSheet
                   snap={sheetSnap}
                   onSnapChange={setSheetSnap}
-                  title={`${trip.destination} 行程`}
+                  title={
+                    appMode === 'ontrip'
+                      ? '今日行程'
+                      : `${trip.destination} 行程`
+                  }
                 >
-                  <ItineraryPanel
-                    days={trip.itinerary}
-                    activeDay={activeDay}
-                    selectedKey={selectedKey}
-                    destination={trip.destination}
-                    userProfile={trip.user_profile ?? userProfile}
-                    travelMode={travelMode}
-                    onSelectDay={(day) => {
-                      setActiveDay(day);
-                      setNearbyPlaces([]);
-                      setFocusTarget(null);
-                      setSheetSnap('half');
-                    }}
-                    onSelectPlace={handleSelectPlace}
-                    onHoverPlace={setHoverKey}
-                    onReplaceSlot={handleReplaceSlot}
-                    onExploreBetween={handleExploreBetween}
-                  />
+                  {itineraryProps && <ItineraryPanel {...itineraryProps} />}
                 </ItineraryBottomSheet>
               </div>
             </div>
           )}
         </main>
       </div>
+
+      {regenFocusOpen && focusSlot && trip && (
+        <RegenerateSlotModal
+          open
+          currentSlot={focusSlot.item}
+          previousPlace={
+            trip.itinerary.find((d) => d.day === focusSlot.day)?.schedule[
+              focusSlot.index - 1
+            ] ?? null
+          }
+          nextPlace={
+            trip.itinerary.find((d) => d.day === focusSlot.day)?.schedule[
+              focusSlot.index + 1
+            ] ?? null
+          }
+          destination={trip.destination}
+          userProfile={trip.user_profile ?? userProfile}
+          travelMode={travelMode}
+          onClose={() => setRegenFocusOpen(false)}
+          onReplaced={(replacement, why) => {
+            void handleReplaceSlot(
+              focusSlot.day,
+              focusSlot.index,
+              replacement,
+              why,
+            );
+            setRegenFocusOpen(false);
+          }}
+        />
+      )}
 
       <Toast message={toast} onClose={() => setToast(null)} />
     </div>

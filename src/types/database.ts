@@ -74,6 +74,15 @@ export interface DestinationEssentials {
 
 export type TravelMode = 'walking' | 'transit' | 'driving';
 
+/** UI mode for PathRescue 2.0 */
+export type AppTripMode = 'planning' | 'ontrip';
+
+/** Visit progress on a schedule slot */
+export type ScheduleItemStatus = 'pending' | 'done' | 'skipped';
+
+/** Trust / verification badge for a place */
+export type PlaceTrustLevel = 'verified' | 'name_only' | 'time_risk';
+
 // =============================================================================
 // AI System Prompt JSON structures
 // =============================================================================
@@ -114,6 +123,12 @@ export interface ScheduleItem {
   maps_search_url?: string | null;
   /** True when data is served from LocalStorage cache */
   from_cache?: boolean;
+  /** Soft lock — AI regen should not overwrite */
+  locked?: boolean;
+  /** On-trip check-in status */
+  status?: ScheduleItemStatus;
+  /** Places verification / risk badge */
+  trust?: PlaceTrustLevel;
 }
 
 /**
@@ -135,6 +150,8 @@ export interface TripGeneratorResponse {
   trip_title: string;
   destination: string;
   total_days: number;
+  /** Trip start date YYYY-MM-DD — drives On-trip mode */
+  start_date?: string | null;
   itinerary: ItineraryDay[];
   /** Practical destination essentials for travelers */
   destination_essentials?: DestinationEssentials;

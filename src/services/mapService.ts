@@ -217,6 +217,8 @@ export async function enrichScheduleItem(
       return {
         ...item,
         maps_search_url: fallbackUrl,
+        trust: item.trust ?? 'name_only',
+        status: item.status ?? 'pending',
       };
     }
 
@@ -229,11 +231,15 @@ export async function enrichScheduleItem(
       photo_url: details.photo_url,
       opening_hours: details.opening_hours,
       maps_search_url: details.google_maps_uri ?? fallbackUrl,
+      trust: 'verified',
+      status: item.status ?? 'pending',
     };
   } catch {
     return {
       ...item,
       maps_search_url: fallbackUrl,
+      trust: item.trust ?? 'name_only',
+      status: item.status ?? 'pending',
     };
   }
 }

@@ -1,6 +1,6 @@
 'use client';
 
-import { FormEvent, useState } from 'react';
+import { FormEvent, useMemo, useState } from 'react';
 
 import {
   BUDGET_OPTIONS,
@@ -9,7 +9,9 @@ import {
   DIETARY_OPTIONS,
   PACE_OPTIONS,
   TRANSPORT_OPTIONS,
+  profileLabel,
 } from '@/lib/travelProfile';
+import { formatLocalISODate } from '@/lib/tripMode';
 import { cn } from '@/lib/utils';
 import type {
   DietaryPreference,
@@ -30,6 +32,7 @@ export const PREFERENCE_OPTIONS = [
 export interface SearchFormValues {
   destination: string;
   total_days: number;
+  start_date: string;
   preferences: string[];
   notes: string;
   user_profile: UserTravelProfile;
@@ -80,11 +83,17 @@ function OptionGroup<T extends string>({
   );
 }
 
+function defaultStartDate(): string {
+  return formatLocalISODate(new Date());
+}
+
 export function SearchForm({ loading = false, onSubmit }: SearchFormProps) {
   const [destination, setDestination] = useState('東京');
   const [totalDays, setTotalDays] = useState(3);
+  const [startDate, setStartDate] = useState(defaultStartDate);
   const [preferences, setPreferences] = useState<string[]>(['food', 'photo']);
   const [notes, setNotes] = useState('');
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const [pace, setPace] = useState<TravelPace>(DEFAULT_USER_PROFILE.pace);
   const [companions, setCompanions] = useState<TravelCompanion>(
     DEFAULT_USER_PROFILE.companions,
@@ -95,6 +104,18 @@ export function SearchForm({ loading = false, onSubmit }: SearchFormProps) {
   );
   const [dietary, setDietary] = useState<DietaryPreference[]>(
     DEFAULT_USER_PROFILE.dietary,
+  );
+
+  const smartSummary = useMemo(
+    () =>
+      profileLabel({
+        pace,
+        companions,
+        budget,
+        transport,
+        dietary,
+      }),
+    [pace, companions, budget, transport, dietary],
   );
 
   function togglePreference(id: string) {
@@ -112,11 +133,12 @@ export function SearchForm({ loading = false, onSubmit }: SearchFormProps) {
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const trimmed = destination.trim();
-    if (!trimmed || loading) return;
+    if (!trimmed || loading || !startDate) return;
 
     onSubmit({
       destination: trimmed,
       total_days: totalDays,
+      start_date: startDate,
       preferences,
       notes: notes.trim(),
       user_profile: {
@@ -130,11 +152,8 @@ export function SearchForm({ loading = false, onSubmit }: SearchFormProps) {
   }
 
   return (
-    <form
-      onSubmit={handleSubmit}
-      className="animate-rise space-y-5 border-b border-[var(--line)] pb-6"
-    >
-      <div className="grid gap-4 sm:grid-cols-[1.4fr_0.6fr]">
+    <form onSubmit={handleSubmit} className="animate-rise space-y-4">
+      <div className="space-y-3">
         <label className="block space-y-2">
           <span className="text-xs font-medium tracking-wide text-[var(--ink-soft)] uppercase">
             目的地
@@ -149,117 +168,156 @@ export function SearchForm({ loading = false, onSubmit }: SearchFormProps) {
           />
         </label>
 
-        <label className="block space-y-2">
-          <span className="text-xs font-medium tracking-wide text-[var(--ink-soft)] uppercase">
-            天數
-          </span>
-          <input
-            type="number"
-            min={1}
-            max={14}
-            value={totalDays}
-            onChange={(e) => setTotalDays(Number(e.target.value) || 1)}
-            className="w-full rounded-xl border border-[var(--line)] bg-white/70 px-4 py-3 text-base outline-none transition focus:border-[var(--sea)] focus:ring-2 focus:ring-[var(--glow)]"
-          />
-        </label>
+        <div className="grid grid-cols-2 gap-3">
+          <label className="block space-y-2">
+            <span className="text-xs font-medium tracking-wide text-[var(--ink-soft)] uppercase">
+              天數
+            </span>
+            <input
+              type="number"
+              min={1}
+              max={14}
+              value={totalDays}
+              onChange={(e) => setTotalDays(Number(e.target.value) || 1)}
+              className="w-full rounded-xl border border-[var(--line)] bg-white/70 px-4 py-3 text-base outline-none transition focus:border-[var(--sea)] focus:ring-2 focus:ring-[var(--glow)]"
+            />
+          </label>
+
+          <label className="block space-y-2">
+            <span className="text-xs font-medium tracking-wide text-[var(--ink-soft)] uppercase">
+              出發日
+            </span>
+            <input
+              type="date"
+              value={startDate}
+              onChange={(e) => setStartDate(e.target.value)}
+              required
+              className="w-full rounded-xl border border-[var(--line)] bg-white/70 px-3 py-3 text-base outline-none transition focus:border-[var(--sea)] focus:ring-2 focus:ring-[var(--glow)]"
+            />
+          </label>
+        </div>
       </div>
 
-      <fieldset className="space-y-2">
-        <legend className="text-xs font-medium tracking-wide text-[var(--ink-soft)] uppercase">
-          旅遊偏好
-        </legend>
-        <div className="flex flex-wrap gap-2">
-          {PREFERENCE_OPTIONS.map((option) => {
-            const active = preferences.includes(option.id);
-            return (
-              <button
-                key={option.id}
-                type="button"
-                onClick={() => togglePreference(option.id)}
-                className={cn(
-                  'rounded-lg px-3.5 py-2 text-sm transition',
-                  active
-                    ? 'bg-[var(--sea)] text-white'
-                    : 'bg-white/60 text-[var(--ink-soft)] hover:bg-white',
-                )}
-              >
-                {option.label}
-              </button>
-            );
-          })}
-        </div>
-      </fieldset>
+      <div className="rounded-xl border border-[var(--line)] bg-white/50 px-3 py-2.5">
+        <button
+          type="button"
+          onClick={() => setShowAdvanced((v) => !v)}
+          className="flex w-full items-center justify-between gap-2 text-left"
+        >
+          <div>
+            <p className="text-xs tracking-wide text-[var(--sea)] uppercase">
+              進階偏好（選填）
+            </p>
+            <p className="mt-0.5 text-xs text-[var(--ink-soft)]">
+              聰明預設：{smartSummary}
+            </p>
+          </div>
+          <span className="shrink-0 text-xs text-[var(--ink-soft)]">
+            {showAdvanced ? '收合' : '調整'}
+          </span>
+        </button>
 
-      <OptionGroup
-        legend="步調風格"
-        options={PACE_OPTIONS}
-        value={pace}
-        onChange={setPace}
-      />
-      <OptionGroup
-        legend="同行夥伴"
-        options={COMPANION_OPTIONS}
-        value={companions}
-        onChange={setCompanions}
-      />
-      <OptionGroup
-        legend="預算等級"
-        options={BUDGET_OPTIONS}
-        value={budget}
-        onChange={setBudget}
-      />
-      <OptionGroup
-        legend="交通方式"
-        options={TRANSPORT_OPTIONS}
-        value={transport}
-        onChange={setTransport}
-      />
+        {showAdvanced && (
+          <div className="mt-3 space-y-3 border-t border-[var(--line)] pt-3">
+            <fieldset className="space-y-2">
+              <legend className="text-xs font-medium tracking-wide text-[var(--ink-soft)] uppercase">
+                旅遊偏好
+              </legend>
+              <div className="flex flex-wrap gap-2">
+                {PREFERENCE_OPTIONS.map((option) => {
+                  const active = preferences.includes(option.id);
+                  return (
+                    <button
+                      key={option.id}
+                      type="button"
+                      onClick={() => togglePreference(option.id)}
+                      className={cn(
+                        'rounded-lg px-3 py-1.5 text-xs transition',
+                        active
+                          ? 'bg-[var(--sea)] text-white'
+                          : 'bg-white/60 text-[var(--ink-soft)]',
+                      )}
+                    >
+                      {option.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </fieldset>
 
-      <fieldset className="space-y-2">
-        <legend className="text-xs font-medium tracking-wide text-[var(--ink-soft)] uppercase">
-          飲食偏好
-        </legend>
-        <div className="flex flex-wrap gap-2">
-          {DIETARY_OPTIONS.map((option) => {
-            const active = dietary.includes(option.id);
-            return (
-              <button
-                key={option.id}
-                type="button"
-                onClick={() => toggleDietary(option.id)}
-                className={cn(
-                  'rounded-lg px-3 py-1.5 text-xs transition sm:text-sm',
-                  active
-                    ? 'bg-[var(--coral)] text-white'
-                    : 'bg-white/60 text-[var(--ink-soft)] hover:bg-white',
-                )}
-              >
-                {option.label}
-              </button>
-            );
-          })}
-        </div>
-      </fieldset>
+            <OptionGroup
+              legend="步調風格"
+              options={PACE_OPTIONS}
+              value={pace}
+              onChange={setPace}
+            />
+            <OptionGroup
+              legend="同行夥伴"
+              options={COMPANION_OPTIONS}
+              value={companions}
+              onChange={setCompanions}
+            />
+            <OptionGroup
+              legend="預算等級"
+              options={BUDGET_OPTIONS}
+              value={budget}
+              onChange={setBudget}
+            />
+            <OptionGroup
+              legend="交通方式"
+              options={TRANSPORT_OPTIONS}
+              value={transport}
+              onChange={setTransport}
+            />
 
-      <label className="block space-y-2">
-        <span className="text-xs font-medium tracking-wide text-[var(--ink-soft)] uppercase">
-          補充需求（選填）
-        </span>
-        <textarea
-          value={notes}
-          onChange={(e) => setNotes(e.target.value)}
-          rows={2}
-          placeholder="例如：不想走太多路、想吃拉麵、避開人潮…"
-          className="w-full resize-none rounded-xl border border-[var(--line)] bg-white/70 px-4 py-3 text-sm outline-none transition focus:border-[var(--sea)] focus:ring-2 focus:ring-[var(--glow)]"
-        />
-      </label>
+            <fieldset className="space-y-2">
+              <legend className="text-xs font-medium tracking-wide text-[var(--ink-soft)] uppercase">
+                飲食偏好
+              </legend>
+              <div className="flex flex-wrap gap-2">
+                {DIETARY_OPTIONS.map((option) => {
+                  const active = dietary.includes(option.id);
+                  return (
+                    <button
+                      key={option.id}
+                      type="button"
+                      onClick={() => toggleDietary(option.id)}
+                      className={cn(
+                        'rounded-lg px-3 py-1.5 text-xs transition',
+                        active
+                          ? 'bg-[var(--coral)] text-white'
+                          : 'bg-white/60 text-[var(--ink-soft)]',
+                      )}
+                    >
+                      {option.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </fieldset>
+
+            <label className="block space-y-2">
+              <span className="text-xs font-medium tracking-wide text-[var(--ink-soft)] uppercase">
+                補充需求
+              </span>
+              <textarea
+                value={notes}
+                onChange={(e) => setNotes(e.target.value)}
+                rows={2}
+                placeholder="例如：不想走太多路、想吃拉麵…"
+                className="w-full resize-none rounded-xl border border-[var(--line)] bg-white/70 px-3 py-2 text-sm outline-none focus:border-[var(--sea)]"
+              />
+            </label>
+          </div>
+        )}
+      </div>
 
       <button
         type="submit"
-        disabled={loading || !destination.trim()}
-        className="w-full rounded-xl bg-[var(--ink)] px-5 py-3.5 text-sm font-medium text-[var(--paper)] transition hover:bg-[var(--sea-deep)] sm:w-auto"
+        disabled={loading || !destination.trim() || !startDate}
+        className="w-full rounded-xl bg-[var(--ink)] px-5 py-3.5 text-sm font-medium text-[var(--paper)] transition hover:bg-[var(--sea-deep)]"
       >
-        {loading ? '正在規劃路線…' : '生成智慧行程'}
+        {loading ? '正在規劃路線…' : '✨ 一鍵生成行程'}
       </button>
     </form>
   );

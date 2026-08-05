@@ -128,6 +128,21 @@ function PlaceCard({
     label: categoryLabel(item.category),
   };
 
+  const trustLabel =
+    item.trust === 'verified'
+      ? '🟢 已驗證'
+      : item.trust === 'time_risk'
+        ? '🔴 時間風險'
+        : item.trust === 'name_only'
+          ? '🟡 名稱搜尋'
+          : null;
+
+  const travelLabel = formatTravelLabel(
+    item.travel_from_prev_mins,
+    item.route_summary,
+    travelMode,
+  );
+
   useEffect(() => {
     if (!selected || !cardRef.current) return;
     cardRef.current.scrollIntoView({
@@ -156,6 +171,7 @@ function PlaceCard({
         selected
           ? 'border-[var(--coral)] shadow-md ring-2 ring-[rgba(212,87,42,0.28)]'
           : 'border-[var(--line)]',
+        item.status === 'done' && 'opacity-60',
       )}
     >
       <div className="flex items-start justify-between gap-2">
@@ -167,10 +183,13 @@ function PlaceCard({
             <span className="rounded-md bg-[var(--paper-2)] px-2 py-0.5 text-[11px] text-[var(--sea-deep)]">
               {cat.emoji} {cat.label}
             </span>
-            {item.from_cache && (
+            {trustLabel && (
               <span className="text-[10px] text-[var(--ink-soft)]">
-                離線快取
+                {trustLabel}
               </span>
+            )}
+            {item.status === 'done' && (
+              <span className="text-[10px] text-[var(--sea)]">已完成</span>
             )}
           </div>
           <h4 className="mt-1.5 font-medium text-[var(--ink)]">
@@ -179,15 +198,16 @@ function PlaceCard({
         </div>
       </div>
 
+      {travelLabel && (
+        <p className="mt-1 text-xs text-[var(--ink-soft)]">{travelLabel}</p>
+      )}
+
       <p className="mt-1.5 line-clamp-2 text-sm text-[var(--ink-soft)]">
         {item.reason_to_visit}
       </p>
 
       <div className="mt-2 text-xs text-[var(--ink-soft)]">
         停留 {item.estimated_stay_mins} 分
-        {item.route_summary
-          ? ` · ${formatTravelLabel(item.travel_from_prev_mins, item.route_summary, travelMode) ?? ''}`
-          : ''}
       </div>
 
       <div className="mt-3 flex flex-wrap items-center justify-end gap-1.5">

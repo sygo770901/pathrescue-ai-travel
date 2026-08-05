@@ -32,6 +32,9 @@ export const scheduleItemSchema = z.object({
   route_summary: z.string().nullable().optional(),
   maps_search_url: z.string().nullable().optional(),
   from_cache: z.boolean().optional(),
+  locked: z.boolean().optional(),
+  status: z.enum(['pending', 'done', 'skipped']).optional(),
+  trust: z.enum(['verified', 'name_only', 'time_risk']).optional(),
 });
 
 const itineraryDaySchema = z.object({
@@ -68,6 +71,11 @@ export const tripGeneratorResponseSchema = z.object({
   trip_title: z.string().min(1),
   destination: z.string().min(1),
   total_days: z.number().int().positive(),
+  start_date: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .nullable()
+    .optional(),
   itinerary: z.array(itineraryDaySchema).min(1),
   user_profile: userProfileSchema.optional(),
   destination_essentials: destinationEssentialsSchema.optional(),
@@ -93,7 +101,11 @@ export const generateTripRequestSchema = z.object({
   destination: z.string().min(1).max(120),
   total_days: z.number().int().min(1).max(14),
   preferences: z.array(z.string()).max(8).optional().default([]),
-  start_date: z.string().nullable().optional(),
+  start_date: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .nullable()
+    .optional(),
   notes: z.string().max(1000).nullable().optional(),
   locale: z.string().optional().default('zh-TW'),
   user_profile: userProfileSchema.optional(),

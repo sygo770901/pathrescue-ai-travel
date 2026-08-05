@@ -162,6 +162,8 @@ async function generateWithGeminiModel(
     generationConfig: {
       temperature: params.temperature ?? 0.7,
       responseMimeType: 'application/json',
+      // Multi-day itineraries need headroom; default often truncates to Day 1
+      maxOutputTokens: 8192,
     },
   });
 

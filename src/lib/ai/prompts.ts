@@ -17,6 +17,7 @@ CRITICAL REQUIREMENTS:
    - transport=walking → keep consecutive places very close; transit/driving/taxi → allow larger gaps with realistic travel
    - budget & dietary must influence food/shopping choices
 6. Include destination_essentials for the destination (currency, plug type, emergency numbers).
+7. DAY COUNT IS MANDATORY: itinerary MUST contain exactly total_days day objects (day: 1, day: 2, ...). Never return only Day 1 when total_days > 1.
 
 JSON RESPONSE SCHEMA:
 {
