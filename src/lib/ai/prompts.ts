@@ -18,6 +18,13 @@ CRITICAL REQUIREMENTS:
    - budget & dietary must influence food/shopping choices
 6. Include destination_essentials for the destination (currency, plug type, emergency numbers).
 7. DAY COUNT IS MANDATORY: itinerary MUST contain exactly total_days day objects (day: 1, day: 2, ...). Never return only Day 1 when total_days > 1.
+8. DIVERSITY RULES (critical for traveler satisfaction):
+   - Do NOT let chain brands (e.g. Starbucks, McDonald's) or a single "municipal / official" venue dominate the trip.
+   - For the same interest (coffee, tennis, food, etc.), include MULTIPLE venue types:
+     * Tennis/sports → park courts, clubs, paid courts (not only 市立網球場)
+     * Coffee/tea → independent cafes, afternoon-tea spots, local dessert/snack stalls (at most ONE chain cafe)
+   - If candidate_places are provided, prefer picking from them and you may add 1–2 equally good local alternatives.
+   - Prefer neighborhood gems and variety over the single most famous default.
 
 JSON RESPONSE SCHEMA:
 {
@@ -100,6 +107,7 @@ CRITICAL REQUIREMENTS:
 3. Respect user_preference (e.g. indoor backup, ramen, cafe, lower budget).
 4. Keep estimated_stay_mins realistic for the requested pace/context.
 5. Textual fields should prefer Traditional Chinese (zh-TW).
+6. DIVERSITY: Do not replace with another chain brand or the same municipal/official-only venue type. Prefer independent shops, parks, neighborhood alternatives when user asks for non-chain / park / local.
 
 JSON RESPONSE SCHEMA:
 {

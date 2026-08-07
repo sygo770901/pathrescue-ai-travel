@@ -11,7 +11,12 @@ import {
   validateTripGeneratorResponse,
 } from '@/lib/ai/validators';
 import { checkFreeTierRateLimit } from '@/lib/redis/rateLimiter';
+import { preferenceLabel } from '@/lib/interestOptions';
 import { DEFAULT_USER_PROFILE, profileLabel, transportToTravelMode } from '@/lib/travelProfile';
+import {
+  formatCandidatesForPrompt,
+  searchInterestCandidates,
+} from '@/services/interestSearch';
 import {
   enrichScheduleItem,
   enrichScheduleWithRoutes,
@@ -42,10 +47,11 @@ function buildUserPrompt(input: {
   locale: string;
   user_profile: UserTravelProfile;
   start_date?: string | null;
+  candidatesBlock?: string;
 }): string {
   const preferenceText =
     input.preferences.length > 0
-      ? input.preferences.join(', ')
+      ? input.preferences.map((id) => preferenceLabel(id)).join(', ')
       : 'general sightseeing';
 
   const notesText = input.notes?.trim()
@@ -61,13 +67,15 @@ function buildUserPrompt(input: {
     `CRITICAL: itinerary array MUST contain exactly ${input.total_days} day objects (day 1 through day ${input.total_days}). Do NOT stop after day 1.`,
     `Destination: ${input.destination}`,
     startDateText,
-    `Interest tags: ${preferenceText}`,
+    `Interest tags / directions: ${preferenceText}`,
     `user_profile: ${JSON.stringify(input.user_profile)}`,
     `Traveler profile (human readable): ${profileLabel(input.user_profile)}`,
     `Preferred response language for textual fields: ${input.locale}`,
     'Include destination_essentials and echo user_profile in the JSON response.',
     'Keep consecutive places geographically close and respect transport/companions constraints.',
+    'Apply DIVERSITY RULES: mix venue types; avoid only municipal venues or chain cafes.',
     notesText,
+    input.candidatesBlock ?? '',
   ]
     .filter(Boolean)
     .join('\n');
@@ -215,6 +223,23 @@ export async function POST(request: NextRequest) {
     const userProfile = parsed.data.user_profile ?? DEFAULT_USER_PROFILE;
     const startDate = parsed.data.start_date ?? null;
 
+    let candidatesBlock = '';
+    try {
+      const candidates = await searchInterestCandidates(
+        parsed.data.destination,
+        parsed.data.preferences,
+        parsed.data.notes,
+      );
+      candidatesBlock = formatCandidatesForPrompt(candidates);
+      if (candidates.length > 0) {
+        console.info(
+          `[generate-trip] interest candidates=${candidates.length}`,
+        );
+      }
+    } catch (error) {
+      console.warn('[generate-trip] interest search skipped', error);
+    }
+
     const userPrompt = buildUserPrompt({
       destination: parsed.data.destination,
       total_days: parsed.data.total_days,
@@ -223,6 +248,7 @@ export async function POST(request: NextRequest) {
       locale: parsed.data.locale,
       user_profile: userProfile,
       start_date: startDate,
+      candidatesBlock,
     });
 
     const raw = await chatJsonCompletion({

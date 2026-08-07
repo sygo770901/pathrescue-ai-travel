@@ -31,6 +31,51 @@ const FACILITY_OPTIONS: Array<{ id: NearbyFacilityType; label: string }> = [
   { id: 'toilet', label: '廁所' },
 ];
 
+function ExploreBetweenRow({
+  day,
+  fromIndex,
+  onExplore,
+}: {
+  day: number;
+  fromIndex: number;
+  onExplore: (
+    day: number,
+    fromIndex: number,
+    toIndex: number,
+    facility: NearbyFacilityType,
+  ) => void;
+}) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <div className="space-y-1.5">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="rounded-md border border-dashed border-[var(--line)] px-2 py-1 text-[11px] text-[var(--ink-soft)] hover:border-[var(--sea)]"
+      >
+        {open ? '收合順路探索' : '順路探索…'}
+      </button>
+      {open && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          {FACILITY_OPTIONS.map((option) => (
+            <button
+              key={option.id}
+              type="button"
+              onClick={() =>
+                onExplore(day, fromIndex, fromIndex + 1, option.id)
+              }
+              className="rounded-md border border-dashed border-[var(--line)] px-2 py-1 text-[11px] text-[var(--ink-soft)] hover:border-[var(--sea)] hover:text-[var(--sea-deep)]"
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 const CATEGORY_META: Record<
   ScheduleItem['category'],
   { emoji: string; label: string }
@@ -399,28 +444,11 @@ export function ItineraryPanel({
                           </div>
                         )}
                         {onExploreBetween && (
-                          <div className="flex flex-wrap items-center gap-1.5">
-                            <span className="text-[11px] text-[var(--ink-soft)]">
-                              順路找：
-                            </span>
-                            {FACILITY_OPTIONS.map((option) => (
-                              <button
-                                key={option.id}
-                                type="button"
-                                onClick={() =>
-                                  onExploreBetween(
-                                    day.day,
-                                    index,
-                                    index + 1,
-                                    option.id,
-                                  )
-                                }
-                                className="rounded-md border border-dashed border-[var(--line)] px-2 py-1 text-[11px] text-[var(--ink-soft)] hover:border-[var(--sea)] hover:text-[var(--sea-deep)]"
-                              >
-                                {option.label}
-                              </button>
-                            ))}
-                          </div>
+                          <ExploreBetweenRow
+                            day={day.day}
+                            fromIndex={index}
+                            onExplore={onExploreBetween}
+                          />
                         )}
                       </div>
                     )}

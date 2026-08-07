@@ -12,12 +12,12 @@ import {
 } from '@/components/ItineraryBottomSheet';
 import { ItineraryPanel } from '@/components/ItineraryPanel';
 import { ModeToggle } from '@/components/ModeToggle';
+import { NextStepsBar } from '@/components/NextStepsBar';
 import { OfflineBanner } from '@/components/OfflineBanner';
 import { OnTripFocusCard } from '@/components/OnTripFocusCard';
 import { RegenerateSlotModal } from '@/components/RegenerateSlotModal';
 import { RescuePanel } from '@/components/RescuePanel';
 import { SearchForm, type SearchFormValues } from '@/components/SearchForm';
-import { ShareTripButton } from '@/components/ShareTripButton';
 import { SosButton } from '@/components/SosButton';
 import { Toast } from '@/components/Toast';
 import { TripMap } from '@/components/TripMap';
@@ -84,6 +84,8 @@ export function TripPlannerApp() {
   const [nearbyPlaces, setNearbyPlaces] = useState<NearbyPlace[]>([]);
   const [exploring, setExploring] = useState(false);
   const [regenFocusOpen, setRegenFocusOpen] = useState(false);
+  const [showNextSteps, setShowNextSteps] = useState(false);
+  const [showMoreTools, setShowMoreTools] = useState(false);
 
   const travelMode: TravelMode = useMemo(
     () =>
@@ -309,6 +311,8 @@ export function TripPlannerApp() {
 
       const savedId = await persistTrip(withDate);
       applyTrip(withDate, savedId);
+      setShowNextSteps(true);
+      setShowMoreTools(false);
       showToast(
         `行程已生成：${withDate.itinerary.length} 天（共 ${withDate.total_days} 天）`,
       );
@@ -586,7 +590,7 @@ export function TripPlannerApp() {
                   先選一個城市
                 </h2>
                 <p className="mt-2 text-[var(--ink-soft)]">
-                  填目的地、天數、出發日，一鍵生成後即可規劃或直接出行。
+                  選城市與出發日 → 勾旅行方向與想做的事 → 一鍵生成。
                 </p>
               </div>
             </div>
@@ -612,24 +616,45 @@ export function TripPlannerApp() {
                     onChange={handleModeOverride}
                   />
                   {appMode === 'planning' && (
-                    <>
-                      <ShareTripButton
-                        trip={trip}
-                        tripId={tripId}
-                        onTripIdChange={setTripId}
-                        onToast={showToast}
-                      />
-                      <ExportMapsButton trip={trip} travelMode={travelMode} />
-                    </>
+                    <button
+                      type="button"
+                      onClick={() => setShowMoreTools((v) => !v)}
+                      className="rounded-lg border border-[var(--line)] bg-white/80 px-3 py-2 text-xs text-[var(--ink-soft)]"
+                    >
+                      {showMoreTools ? '收合更多' : '更多工具'}
+                    </button>
                   )}
                 </div>
               </div>
 
-              {appMode === 'planning' && (
-                <DestinationInfoCard
-                  destination={trip.destination}
-                  essentials={trip.destination_essentials}
+              {appMode === 'planning' && showNextSteps && (
+                <NextStepsBar
+                  trip={trip}
+                  tripId={tripId}
+                  onTripIdChange={setTripId}
+                  onToast={showToast}
+                  onStayPlanning={() => {
+                    setShowNextSteps(false);
+                    handleModeOverride('planning');
+                    setSheetSnap('half');
+                    showToast('可以點卡片換景點或看地圖');
+                  }}
+                  onStartOnTrip={() => {
+                    setShowNextSteps(false);
+                    handleModeOverride('ontrip');
+                    setSheetSnap('mapFocus');
+                  }}
                 />
+              )}
+
+              {appMode === 'planning' && showMoreTools && (
+                <div className="flex flex-wrap items-start gap-3 rounded-2xl border border-[var(--line)] bg-white/50 p-3">
+                  <ExportMapsButton trip={trip} travelMode={travelMode} />
+                  <DestinationInfoCard
+                    destination={trip.destination}
+                    essentials={trip.destination_essentials}
+                  />
+                </div>
               )}
 
               {appMode === 'ontrip' && onTripDay != null && (

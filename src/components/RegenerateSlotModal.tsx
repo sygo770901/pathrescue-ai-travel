@@ -8,7 +8,9 @@ import type { ScheduleItem, UserTravelProfile } from '@/types/database';
 const QUICK_PRESETS = [
   { id: 'taste', label: '換口味', value: '想換不同口味的美食' },
   { id: 'indoor', label: '換室內', value: '改室內備案，避免日曬或下雨' },
-  { id: 'cafe', label: '咖啡廳', value: '想找氣氛好的網美咖啡廳' },
+  { id: 'cafe', label: '咖啡廳', value: '想找氣氛好的獨立咖啡或下午茶，不要星巴克' },
+  { id: 'local', label: '換小店', value: '換成在地小店、公園或非連鎖選項' },
+  { id: 'nonchain', label: '非連鎖', value: '不要連鎖品牌或市立官方唯一場館，給更多樣的替代' },
   { id: 'budget', label: '降低預算', value: '降低預算，找更平價的選項' },
 ] as const;
 

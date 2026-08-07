@@ -195,6 +195,79 @@ export async function getPlaceDetails(
 }
 
 /**
+ * Text Search returning up to `maxResults` places (for interest diversity).
+ */
+export async function searchPlacesByText(
+  textQuery: string,
+  options?: {
+    maxResults?: number;
+    languageCode?: string;
+  },
+): Promise<
+  Array<{
+    place_id: string;
+    name: string;
+    latitude: number;
+    longitude: number;
+    rating: number | null;
+    formatted_address: string | null;
+  }>
+> {
+  const apiKey = getServerMapsKey();
+  const maxResults = Math.min(8, Math.max(1, options?.maxResults ?? 4));
+
+  const response = await fetch(`${GOOGLE_PLACES_BASE}/places:searchText`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Goog-Api-Key': apiKey,
+      'X-Goog-FieldMask':
+        'places.id,places.displayName,places.formattedAddress,places.location,places.rating',
+    },
+    body: JSON.stringify({
+      textQuery,
+      languageCode: options?.languageCode ?? 'zh-TW',
+      maxResultCount: maxResults,
+    }),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(
+      `Places Text Search failed (${response.status}): ${errorText}`,
+    );
+  }
+
+  const data = (await response.json()) as PlacesTextSearchResponse;
+  const results: Array<{
+    place_id: string;
+    name: string;
+    latitude: number;
+    longitude: number;
+    rating: number | null;
+    formatted_address: string | null;
+  }> = [];
+
+  for (const place of data.places ?? []) {
+    const lat = place.location?.latitude;
+    const lng = place.location?.longitude;
+    if (!place.id || typeof lat !== 'number' || typeof lng !== 'number') {
+      continue;
+    }
+    results.push({
+      place_id: place.id,
+      name: place.displayName?.text ?? textQuery,
+      latitude: lat,
+      longitude: lng,
+      rating: place.rating ?? null,
+      formatted_address: place.formattedAddress ?? null,
+    });
+  }
+
+  return results;
+}
+
+/**
  * Enrich a ScheduleItem with verified Place ID, photo, hours, and coordinates.
  */
 export async function enrichScheduleItem(

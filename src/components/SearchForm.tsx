@@ -3,6 +3,11 @@
 import { FormEvent, useMemo, useState } from 'react';
 
 import {
+  ACTIVITY_OPTIONS,
+  MAX_DIRECTIONS,
+  TRIP_DIRECTION_OPTIONS,
+} from '@/lib/interestOptions';
+import {
   BUDGET_OPTIONS,
   COMPANION_OPTIONS,
   DEFAULT_USER_PROFILE,
@@ -21,13 +26,6 @@ import type {
   TravelTransport,
   UserTravelProfile,
 } from '@/types/database';
-
-export const PREFERENCE_OPTIONS = [
-  { id: 'food', label: '美食' },
-  { id: 'photo', label: '網美' },
-  { id: 'outdoor', label: '戶外' },
-  { id: 'family', label: '親子' },
-] as const;
 
 export interface SearchFormValues {
   destination: string;
@@ -83,6 +81,54 @@ function OptionGroup<T extends string>({
   );
 }
 
+function ChipMultiSelect({
+  legend,
+  hint,
+  options,
+  selected,
+  onToggle,
+  accent = 'sea',
+}: {
+  legend: string;
+  hint?: string;
+  options: ReadonlyArray<{ id: string; label: string }>;
+  selected: string[];
+  onToggle: (id: string) => void;
+  accent?: 'sea' | 'coral';
+}) {
+  const activeClass =
+    accent === 'coral'
+      ? 'bg-[var(--coral)] text-white'
+      : 'bg-[var(--sea)] text-white';
+
+  return (
+    <fieldset className="space-y-2">
+      <legend className="text-xs font-medium tracking-wide text-[var(--ink-soft)] uppercase">
+        {legend}
+      </legend>
+      {hint && <p className="text-[11px] text-[var(--ink-soft)]">{hint}</p>}
+      <div className="flex flex-wrap gap-2">
+        {options.map((option) => {
+          const active = selected.includes(option.id);
+          return (
+            <button
+              key={option.id}
+              type="button"
+              onClick={() => onToggle(option.id)}
+              className={cn(
+                'rounded-lg px-3 py-1.5 text-xs transition sm:text-sm',
+                active ? activeClass : 'bg-white/70 text-[var(--ink-soft)] hover:bg-white',
+              )}
+            >
+              {option.label}
+            </button>
+          );
+        })}
+      </div>
+    </fieldset>
+  );
+}
+
 function defaultStartDate(): string {
   return formatLocalISODate(new Date());
 }
@@ -91,7 +137,11 @@ export function SearchForm({ loading = false, onSubmit }: SearchFormProps) {
   const [destination, setDestination] = useState('東京');
   const [totalDays, setTotalDays] = useState(3);
   const [startDate, setStartDate] = useState(defaultStartDate);
-  const [preferences, setPreferences] = useState<string[]>(['food', 'photo']);
+  const [directions, setDirections] = useState<string[]>(['dir_food']);
+  const [activities, setActivities] = useState<string[]>([
+    'act_coffee',
+    'act_local_food',
+  ]);
   const [notes, setNotes] = useState('');
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [pace, setPace] = useState<TravelPace>(DEFAULT_USER_PROFILE.pace);
@@ -118,8 +168,16 @@ export function SearchForm({ loading = false, onSubmit }: SearchFormProps) {
     [pace, companions, budget, transport, dietary],
   );
 
-  function togglePreference(id: string) {
-    setPreferences((prev) =>
+  function toggleDirection(id: string) {
+    setDirections((prev) => {
+      if (prev.includes(id)) return prev.filter((p) => p !== id);
+      if (prev.length >= MAX_DIRECTIONS) return [...prev.slice(1), id];
+      return [...prev, id];
+    });
+  }
+
+  function toggleActivity(id: string) {
+    setActivities((prev) =>
       prev.includes(id) ? prev.filter((p) => p !== id) : [...prev, id],
     );
   }
@@ -139,7 +197,7 @@ export function SearchForm({ loading = false, onSubmit }: SearchFormProps) {
       destination: trimmed,
       total_days: totalDays,
       start_date: startDate,
-      preferences,
+      preferences: [...directions, ...activities],
       notes: notes.trim(),
       user_profile: {
         pace,
@@ -198,6 +256,36 @@ export function SearchForm({ loading = false, onSubmit }: SearchFormProps) {
         </div>
       </div>
 
+      <ChipMultiSelect
+        legend="旅行方向"
+        hint={`最多選 ${MAX_DIRECTIONS} 個，決定行程主軸`}
+        options={TRIP_DIRECTION_OPTIONS}
+        selected={directions}
+        onToggle={toggleDirection}
+      />
+
+      <ChipMultiSelect
+        legend="想做的事"
+        hint="可多選，越具體行程越貼近你"
+        options={ACTIVITY_OPTIONS}
+        selected={activities}
+        onToggle={toggleActivity}
+        accent="coral"
+      />
+
+      <label className="block space-y-2">
+        <span className="text-xs font-medium tracking-wide text-[var(--ink-soft)] uppercase">
+          補充需求（選填）
+        </span>
+        <textarea
+          value={notes}
+          onChange={(e) => setNotes(e.target.value)}
+          rows={2}
+          placeholder="例如：想打網球、不想只去星巴克、想找有插座的獨立咖啡…"
+          className="w-full resize-none rounded-xl border border-[var(--line)] bg-white/70 px-3 py-2 text-sm outline-none focus:border-[var(--sea)]"
+        />
+      </label>
+
       <div className="rounded-xl border border-[var(--line)] bg-white/50 px-3 py-2.5">
         <button
           type="button"
@@ -219,32 +307,6 @@ export function SearchForm({ loading = false, onSubmit }: SearchFormProps) {
 
         {showAdvanced && (
           <div className="mt-3 space-y-3 border-t border-[var(--line)] pt-3">
-            <fieldset className="space-y-2">
-              <legend className="text-xs font-medium tracking-wide text-[var(--ink-soft)] uppercase">
-                旅遊偏好
-              </legend>
-              <div className="flex flex-wrap gap-2">
-                {PREFERENCE_OPTIONS.map((option) => {
-                  const active = preferences.includes(option.id);
-                  return (
-                    <button
-                      key={option.id}
-                      type="button"
-                      onClick={() => togglePreference(option.id)}
-                      className={cn(
-                        'rounded-lg px-3 py-1.5 text-xs transition',
-                        active
-                          ? 'bg-[var(--sea)] text-white'
-                          : 'bg-white/60 text-[var(--ink-soft)]',
-                      )}
-                    >
-                      {option.label}
-                    </button>
-                  );
-                })}
-              </div>
-            </fieldset>
-
             <OptionGroup
               legend="步調風格"
               options={PACE_OPTIONS}
@@ -295,19 +357,6 @@ export function SearchForm({ loading = false, onSubmit }: SearchFormProps) {
                 })}
               </div>
             </fieldset>
-
-            <label className="block space-y-2">
-              <span className="text-xs font-medium tracking-wide text-[var(--ink-soft)] uppercase">
-                補充需求
-              </span>
-              <textarea
-                value={notes}
-                onChange={(e) => setNotes(e.target.value)}
-                rows={2}
-                placeholder="例如：不想走太多路、想吃拉麵…"
-                className="w-full resize-none rounded-xl border border-[var(--line)] bg-white/70 px-3 py-2 text-sm outline-none focus:border-[var(--sea)]"
-              />
-            </label>
           </div>
         )}
       </div>
