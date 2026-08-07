@@ -83,16 +83,84 @@ export function getGeminiClient(): GoogleGenerativeAI {
 }
 
 /**
- * Strip accidental markdown fences and parse JSON from LLM output.
+ * Extract the first complete JSON value (object/array) from messy LLM output.
+ * Handles markdown fences, leading prose, and trailing junk after the JSON.
  */
-export function parseStrictJson<T>(raw: string): T {
+export function extractJsonPayload(raw: string): string {
   const trimmed = raw.trim();
   const withoutFences = trimmed
     .replace(/^```(?:json)?\s*/i, '')
-    .replace(/\s*```$/i, '')
+    .replace(/\s*```[\s\S]*$/i, '')
     .trim();
 
-  return JSON.parse(withoutFences) as T;
+  const start = withoutFences.search(/[\{\[]/);
+  if (start < 0) {
+    throw new Error('AI 回傳內容找不到 JSON，請再試一次');
+  }
+
+  const stack: string[] = [];
+  let inString = false;
+  let escaped = false;
+
+  for (let i = start; i < withoutFences.length; i += 1) {
+    const ch = withoutFences[i];
+
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (ch === '\\') {
+        escaped = true;
+        continue;
+      }
+      if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+
+    if (ch === '{' || ch === '[') {
+      stack.push(ch);
+      continue;
+    }
+
+    if (ch === '}' || ch === ']') {
+      const open = stack.pop();
+      if (
+        (ch === '}' && open !== '{') ||
+        (ch === ']' && open !== '[') ||
+        open === undefined
+      ) {
+        throw new Error('AI 回傳的 JSON 括號不匹配，請再試一次');
+      }
+      if (stack.length === 0) {
+        return withoutFences.slice(start, i + 1);
+      }
+    }
+  }
+
+  throw new Error(
+    'AI 回傳的行程 JSON 不完整（天數較長時較常見）。系統會嘗試分段重產，或請改較短天數再試。',
+  );
+}
+
+/**
+ * Strip accidental markdown fences / trailing junk and parse JSON from LLM output.
+ */
+export function parseStrictJson<T>(raw: string): T {
+  const payload = extractJsonPayload(raw);
+  try {
+    return JSON.parse(payload) as T;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`行程資料解析失敗：${message}。請再試一次。`);
+  }
 }
 
 function isRetryableGeminiModelError(error: unknown): boolean {
@@ -152,6 +220,7 @@ async function generateWithGeminiModel(
     systemPrompt: string;
     userPrompt: string;
     temperature?: number;
+    maxOutputTokens?: number;
   },
 ): Promise<string> {
   const client = getGeminiClient();
@@ -162,8 +231,8 @@ async function generateWithGeminiModel(
     generationConfig: {
       temperature: params.temperature ?? 0.7,
       responseMimeType: 'application/json',
-      // Multi-day itineraries need headroom; default often truncates to Day 1
-      maxOutputTokens: 8192,
+      // Long multi-day itineraries need large headroom
+      maxOutputTokens: params.maxOutputTokens ?? 16384,
     },
   });
 
@@ -181,6 +250,7 @@ async function chatJsonWithGemini(params: {
   systemPrompt: string;
   userPrompt: string;
   temperature?: number;
+  maxOutputTokens?: number;
 }): Promise<string> {
   const candidates = getGeminiModelCandidates();
   let lastError: unknown;
@@ -216,6 +286,7 @@ export async function chatJsonCompletion(params: {
   systemPrompt: string;
   userPrompt: string;
   temperature?: number;
+  maxOutputTokens?: number;
 }): Promise<string> {
   const provider = getAiProvider();
 

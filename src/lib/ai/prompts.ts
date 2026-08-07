@@ -8,7 +8,7 @@ Your task is to generate a highly realistic, logistically sound travel itinerary
 
 CRITICAL REQUIREMENTS:
 1. You MUST respond ONLY with a single, valid JSON object.
-2. Do NOT include markdown code blocks (e.g. \`\`\`json ... \`\`\`), do NOT add any markdown, intro, or outtro text.
+2. Do NOT include markdown code blocks (e.g. \`\`\`json ... \`\`\`), do NOT add any markdown, intro, or outro text. The response must END at the closing \`}\` — no trailing comments or extra JSON.
 3. Logical Sequencing: Ensure geographical proximity between consecutive places to minimize travel time.
 4. Real Places Only: Recommend popular, existing spots with accurate approximate coordinates.
 5. Respect user_profile strictly:

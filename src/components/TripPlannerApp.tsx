@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 
 import { DestinationInfoCard } from '@/components/DestinationInfoCard';
@@ -11,16 +11,19 @@ import {
   type SheetSnap,
 } from '@/components/ItineraryBottomSheet';
 import { ItineraryPanel } from '@/components/ItineraryPanel';
-import { ModeToggle } from '@/components/ModeToggle';
-import { NextStepsBar } from '@/components/NextStepsBar';
 import { OfflineBanner } from '@/components/OfflineBanner';
 import { OnTripFocusCard } from '@/components/OnTripFocusCard';
 import { RegenerateSlotModal } from '@/components/RegenerateSlotModal';
 import { RescuePanel } from '@/components/RescuePanel';
 import { SearchForm, type SearchFormValues } from '@/components/SearchForm';
+import { ShareTripButton } from '@/components/ShareTripButton';
 import { SosButton } from '@/components/SosButton';
 import { Toast } from '@/components/Toast';
 import { TripMap } from '@/components/TripMap';
+import {
+  TripWorkspaceTabs,
+  type WorkspaceTab,
+} from '@/components/TripWorkspaceTabs';
 import {
   getLatestCachedTrip,
   isBrowserOffline,
@@ -34,7 +37,6 @@ import {
   findNextFocusSlot,
   getTodayTripDay,
   loadModeOverride,
-  resolveAppTripMode,
   saveModeOverride,
   type ModeOverride,
 } from '@/lib/tripMode';
@@ -62,6 +64,34 @@ const FACILITY_LABEL: Record<NearbyFacilityType, string> = {
   toilet: '廁所',
 };
 
+function headerCopy(tab: WorkspaceTab, hasTrip: boolean): {
+  title: string;
+  subtitle: string;
+} {
+  if (tab === 'ontrip' && hasTrip) {
+    return {
+      title: '今日導航員',
+      subtitle: '聚焦下一站、一鍵導航，突發狀況可現場救援並寫回行程。',
+    };
+  }
+  if (tab === 'itinerary') {
+    return {
+      title: '行程總覽',
+      subtitle: '依天瀏覽與微調景點；需要空間感時切到地圖，出發當天切到出行。',
+    };
+  }
+  if (tab === 'map') {
+    return {
+      title: '行程地圖',
+      subtitle: '看景點相對位置與路線；點標記可對應行程站點。',
+    };
+  }
+  return {
+    title: 'AI 智慧旅遊導航與救援',
+    subtitle: '選目的地、天數與出發日，生成後可到行程微調、地圖檢視或出行導航。',
+  };
+}
+
 export function TripPlannerApp() {
   const searchParams = useSearchParams();
   const [loading, setLoading] = useState(false);
@@ -75,7 +105,7 @@ export function TripPlannerApp() {
   const [focusTarget, setFocusTarget] = useState<PlaceFocusTarget | null>(null);
   const [hoverKey, setHoverKey] = useState<string | null>(null);
   const [sheetSnap, setSheetSnap] = useState<SheetSnap>('half');
-  const [modeOverride, setModeOverride] = useState<ModeOverride>('auto');
+  const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>('plan');
   const [offline, setOffline] = useState(false);
   const [usingCache, setUsingCache] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
@@ -84,8 +114,8 @@ export function TripPlannerApp() {
   const [nearbyPlaces, setNearbyPlaces] = useState<NearbyPlace[]>([]);
   const [exploring, setExploring] = useState(false);
   const [regenFocusOpen, setRegenFocusOpen] = useState(false);
-  const [showNextSteps, setShowNextSteps] = useState(false);
-  const [showMoreTools, setShowMoreTools] = useState(false);
+  const [showItineraryHint, setShowItineraryHint] = useState(false);
+  const autoLandedRef = useRef(false);
 
   const travelMode: TravelMode = useMemo(
     () =>
@@ -95,27 +125,20 @@ export function TripPlannerApp() {
     [trip?.user_profile?.transport, userProfile.transport],
   );
 
-  const appMode = useMemo(
-    () => resolveAppTripMode(trip, modeOverride),
-    [trip, modeOverride],
-  );
-
   const todayDay = useMemo(
     () => (trip ? getTodayTripDay(trip) : null),
     [trip],
   );
 
   const onTripDay = useMemo(() => {
-    if (appMode !== 'ontrip' || !trip) return null;
+    if (workspaceTab !== 'ontrip' || !trip) return null;
     return todayDay ?? trip.itinerary[0]?.day ?? 1;
-  }, [appMode, todayDay, trip]);
+  }, [workspaceTab, todayDay, trip]);
 
   const focusSlot = useMemo(() => {
     if (!trip || onTripDay == null) return null;
     return findNextFocusSlot(trip, onTripDay);
   }, [trip, onTripDay]);
-
-  const canAutoOnTrip = todayDay !== null;
 
   const showToast = useCallback((message: string) => {
     setToast(message);
@@ -130,16 +153,26 @@ export function TripPlannerApp() {
     [],
   );
 
-  const handleModeOverride = useCallback((next: ModeOverride) => {
-    setModeOverride(next);
-    saveModeOverride(next);
-    if (next === 'planning') setSheetSnap('half');
-    if (next === 'ontrip') setSheetSnap('mapFocus');
+  const syncTabMode = useCallback((tab: WorkspaceTab) => {
+    const nextMode: ModeOverride = tab === 'ontrip' ? 'ontrip' : 'planning';
+    saveModeOverride(nextMode);
+    if (tab === 'ontrip') setSheetSnap('mapFocus');
+    if (tab === 'itinerary' || tab === 'plan') setSheetSnap('half');
+    if (tab === 'map') setSheetSnap('mapFocus');
   }, []);
 
+  const handleWorkspaceTab = useCallback(
+    (tab: WorkspaceTab) => {
+      setWorkspaceTab(tab);
+      syncTabMode(tab);
+      if (tab === 'ontrip') {
+        setShowItineraryHint(false);
+      }
+    },
+    [syncTabMode],
+  );
+
   useEffect(() => {
-    setModeOverride(loadModeOverride());
-    // Soft prune on boot — keep newest trips only
     try {
       const latest = getLatestCachedTrip();
       if (latest?.tripId) {
@@ -153,11 +186,11 @@ export function TripPlannerApp() {
   }, []);
 
   useEffect(() => {
-    if (appMode === 'ontrip' && onTripDay != null) {
+    if (workspaceTab === 'ontrip' && onTripDay != null) {
       setActiveDay(onTripDay);
       setSheetSnap((prev) => (prev === 'full' ? prev : 'mapFocus'));
     }
-  }, [appMode, onTripDay]);
+  }, [workspaceTab, onTripDay]);
 
   const applyTrip = useCallback(
     (nextTrip: TripGeneratorResponse, nextTripId?: string | null) => {
@@ -194,6 +227,20 @@ export function TripPlannerApp() {
     [],
   );
 
+  /** First time a trip appears under auto mode during trip dates → land on 出行 */
+  useEffect(() => {
+    if (!trip || autoLandedRef.current) return;
+    const stored = loadModeOverride();
+    const autoDay = getTodayTripDay(trip);
+    if ((stored === 'auto' || stored === 'ontrip') && autoDay != null) {
+      autoLandedRef.current = true;
+      setWorkspaceTab('ontrip');
+      saveModeOverride('ontrip');
+      setActiveDay(autoDay);
+      setSheetSnap('mapFocus');
+    }
+  }, [trip]);
+
   useEffect(() => {
     const updateOnline = () => setOffline(isBrowserOffline());
     updateOnline();
@@ -220,8 +267,12 @@ export function TripPlannerApp() {
       );
       setUsingCache(true);
       if (isBrowserOffline()) setOffline(true);
+      if (!getTodayTripDay(cached.trip)) {
+        setWorkspaceTab('itinerary');
+        syncTabMode('itinerary');
+      }
     }
-  }, [applyTrip, searchParams]);
+  }, [applyTrip, searchParams, syncTabMode]);
 
   const persistTrip = useCallback(
     async (nextTrip: TripGeneratorResponse): Promise<string | null> => {
@@ -273,6 +324,8 @@ export function TripPlannerApp() {
         setUsingCache(true);
         setOffline(true);
         setError('目前離線，已改顯示本機快取行程');
+        setWorkspaceTab('itinerary');
+        syncTabMode('itinerary');
       } else {
         setError('目前離線，且沒有可顯示的快取行程');
       }
@@ -311,8 +364,10 @@ export function TripPlannerApp() {
 
       const savedId = await persistTrip(withDate);
       applyTrip(withDate, savedId);
-      setShowNextSteps(true);
-      setShowMoreTools(false);
+      autoLandedRef.current = true;
+      setWorkspaceTab('itinerary');
+      syncTabMode('itinerary');
+      setShowItineraryHint(true);
       showToast(
         `行程已生成：${withDate.itinerary.length} 天（共 ${withDate.total_days} 天）`,
       );
@@ -331,6 +386,8 @@ export function TripPlannerApp() {
         );
         setUsingCache(true);
         setError(`${friendly}；已改顯示快取資料`);
+        setWorkspaceTab('itinerary');
+        syncTabMode('itinerary');
       } else {
         setError(friendly);
       }
@@ -436,17 +493,20 @@ export function TripPlannerApp() {
 
   const handleCheckIn = useCallback(async () => {
     if (!trip || !focusSlot) return;
-    await updateTripDays((current) => ({
-      ...current,
-      itinerary: current.itinerary.map((d) =>
-        d.day !== focusSlot.day
-          ? d
-          : {
-              ...d,
-              schedule: setSlotStatus(d.schedule, focusSlot.index, 'done'),
-            },
-      ),
-    }), `已打卡：${focusSlot.item.place_name}`);
+    await updateTripDays(
+      (current) => ({
+        ...current,
+        itinerary: current.itinerary.map((d) =>
+          d.day !== focusSlot.day
+            ? d
+            : {
+                ...d,
+                schedule: setSlotStatus(d.schedule, focusSlot.index, 'done'),
+              },
+        ),
+      }),
+      `已打卡：${focusSlot.item.place_name}`,
+    );
   }, [focusSlot, trip, updateTripDays]);
 
   const handleExploreBetween = useCallback(
@@ -486,6 +546,7 @@ export function TripPlannerApp() {
 
         setNearbyPlaces(json.data.places);
         setActiveDay(day);
+        handleWorkspaceTab('map');
         showToast(
           json.data.places.length > 0
             ? `找到 ${json.data.places.length} 處順路${FACILITY_LABEL[facility]}`
@@ -498,13 +559,16 @@ export function TripPlannerApp() {
         setExploring(false);
       }
     },
-    [exploring, showToast, trip],
+    [exploring, handleWorkspaceTab, showToast, trip],
   );
 
   const itineraryProps = trip
     ? {
         days: trip.itinerary,
-        activeDay,
+        activeDay:
+          workspaceTab === 'ontrip' && onTripDay != null
+            ? onTripDay
+            : activeDay,
         selectedKey,
         destination: trip.destination,
         userProfile: trip.user_profile ?? userProfile,
@@ -513,45 +577,94 @@ export function TripPlannerApp() {
           setActiveDay(day);
           setNearbyPlaces([]);
           setFocusTarget(null);
-          if (appMode === 'planning') setSheetSnap('half');
+          if (workspaceTab !== 'ontrip') setSheetSnap('half');
         },
         onSelectPlace: handleSelectPlace,
         onHoverPlace: setHoverKey,
         onReplaceSlot: handleReplaceSlot,
         onExploreBetween:
-          appMode === 'planning' ? handleExploreBetween : undefined,
+          workspaceTab === 'itinerary' ? handleExploreBetween : undefined,
       }
     : null;
 
+  const copy = headerCopy(workspaceTab, Boolean(trip));
+
+  const tripMeta = trip ? (
+    <div className="mb-1">
+      <p className="text-xs tracking-wide text-[var(--ink-soft)] uppercase">
+        {trip.destination} · {trip.itinerary.length}/{trip.total_days} 天
+        {trip.start_date ? ` · 出發 ${trip.start_date}` : ''}
+        {tripId ? ` · #${tripId.slice(0, 8)}` : ''}
+      </p>
+      <h2 className="font-display text-2xl text-[var(--ink)] sm:text-3xl">
+        {trip.trip_title}
+      </h2>
+    </div>
+  ) : null;
+
+  const mapBlock = trip ? (
+    <div className="relative min-h-[70vh] flex-1 lg:grid lg:min-h-0 lg:grid-cols-[minmax(0,1.2fr)_minmax(280px,0.8fr)] lg:gap-4">
+      <div className="h-[70vh] min-h-[320px] lg:h-auto lg:min-h-[480px]">
+        <TripMap
+          trip={trip}
+          selectedKey={selectedKey}
+          highlightKey={hoverKey}
+          focusTarget={focusTarget}
+          activeDay={
+            workspaceTab === 'ontrip' && onTripDay != null
+              ? onTripDay
+              : activeDay
+          }
+          nearbyPlaces={nearbyPlaces}
+          onSelect={handleSelectPlace}
+        />
+      </div>
+      <div className="hidden min-h-[280px] rounded-2xl border border-[var(--line)] bg-white/50 p-4 backdrop-blur-sm lg:block">
+        {itineraryProps && <ItineraryPanel {...itineraryProps} />}
+      </div>
+      <ItineraryBottomSheet
+        snap={sheetSnap}
+        onSnapChange={setSheetSnap}
+        title={
+          workspaceTab === 'ontrip'
+            ? '今日行程'
+            : `${trip.destination} 行程`
+        }
+      >
+        {itineraryProps && <ItineraryPanel {...itineraryProps} />}
+      </ItineraryBottomSheet>
+    </div>
+  ) : null;
+
   return (
-    <div className="mx-auto flex min-h-screen w-full max-w-7xl flex-col px-4 py-6 sm:px-6 lg:px-8">
+    <div className="mx-auto flex min-h-screen w-full max-w-7xl flex-col px-4 py-6 pb-24 sm:px-6 lg:px-8 lg:pb-8">
       <OfflineBanner offline={offline || (usingCache && Boolean(error))} />
 
-      <header className="animate-rise mb-6 max-w-2xl">
+      <header className="animate-rise mb-4 max-w-2xl">
         <p className="text-sm font-medium tracking-[0.18em] text-[var(--sea)] uppercase">
           PathRescue 2.0
         </p>
         <h1 className="font-display mt-2 text-4xl leading-tight text-[var(--ink)] sm:text-5xl">
-          {appMode === 'ontrip' && trip
-            ? '今日導航員'
-            : 'AI 智慧旅遊導航與救援'}
+          {copy.title}
         </h1>
         <p className="mt-3 max-w-xl text-base text-[var(--ink-soft)]">
-          {appMode === 'ontrip'
-            ? '聚焦下一站、一鍵導航，突發狀況可現場救援並寫回行程。'
-            : '三欄搞定行程：目的地、天數、出發日。進階偏好可選，旅途中自動切換出行模式。'}
+          {copy.subtitle}
         </p>
       </header>
 
-      <div
-        className={
-          appMode === 'ontrip' && trip
-            ? 'grid flex-1 gap-6'
-            : 'grid flex-1 gap-6 lg:grid-cols-[380px_minmax(0,1fr)]'
-        }
-      >
-        {(appMode === 'planning' || !trip) && (
-          <aside className="space-y-5">
+      <div className="mb-5">
+        <TripWorkspaceTabs
+          placement="top"
+          active={workspaceTab}
+          hasTrip={Boolean(trip)}
+          onChange={handleWorkspaceTab}
+          onBlocked={() => showToast('請先生成行程')}
+        />
+      </div>
+
+      <main className="animate-rise min-h-[50vh] flex-1">
+        {workspaceTab === 'plan' && (
+          <div className="mx-auto w-full max-w-lg space-y-5">
             <div className="rounded-2xl border border-[var(--line)] bg-white/50 p-5 backdrop-blur-sm">
               <SearchForm loading={loading} onSubmit={handleGenerate} />
               <GenerationProgress active={loading} />
@@ -562,189 +675,180 @@ export function TripPlannerApp() {
               )}
             </div>
 
+            {!trip && (
+              <div className="rounded-2xl border border-dashed border-[var(--line)] bg-[rgba(15,107,92,0.06)] p-6">
+                <h2 className="font-display text-2xl text-[var(--ink)]">
+                  先選一個城市
+                </h2>
+                <p className="mt-2 text-sm text-[var(--ink-soft)]">
+                  選城市與出發日 → 勾旅行方向與想做的事 → 一鍵生成。完成後會自動打開「行程」。
+                </p>
+              </div>
+            )}
+
             {trip && (
-              <>
+              <div className="space-y-4 rounded-2xl border border-[var(--line)] bg-white/50 p-4">
+                {tripMeta}
+                <p className="text-sm text-[var(--ink-soft)]">
+                  可在此重產行程，或使用下方工具。
+                </p>
+                <div className="flex flex-wrap items-start gap-3">
+                  <ExportMapsButton trip={trip} travelMode={travelMode} />
+                  <ShareTripButton
+                    trip={trip}
+                    tripId={tripId}
+                    onTripIdChange={setTripId}
+                    onToast={showToast}
+                  />
+                </div>
+                <DestinationInfoCard
+                  destination={trip.destination}
+                  essentials={trip.destination_essentials}
+                />
+                <div className="flex flex-wrap gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => handleWorkspaceTab('itinerary')}
+                    className="rounded-lg bg-[var(--ink)] px-3 py-2 text-sm text-white"
+                  >
+                    查看行程
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleWorkspaceTab('map')}
+                    className="rounded-lg border border-[var(--line)] bg-white px-3 py-2 text-sm text-[var(--ink)]"
+                  >
+                    打開地圖
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {workspaceTab === 'itinerary' && trip && itineraryProps && (
+          <div className="mx-auto flex w-full max-w-2xl flex-col gap-4">
+            {tripMeta}
+            {showItineraryHint && (
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[var(--sea)]/25 bg-[rgba(15,107,92,0.08)] px-3 py-2.5 text-sm text-[var(--ink)]">
+                <span>可微調景點，或切到「出行」開始今天。</span>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => handleWorkspaceTab('ontrip')}
+                    className="rounded-lg bg-[var(--coral)] px-2.5 py-1 text-xs text-white"
+                  >
+                    去出行
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowItineraryHint(false)}
+                    className="rounded-lg px-2 py-1 text-xs text-[var(--ink-soft)]"
+                  >
+                    關閉
+                  </button>
+                </div>
+              </div>
+            )}
+            <div className="rounded-2xl border border-[var(--line)] bg-white/50 p-4 backdrop-blur-sm">
+              <ItineraryPanel {...itineraryProps} />
+            </div>
+          </div>
+        )}
+
+        {workspaceTab === 'map' && trip && (
+          <div className="flex h-full min-h-0 flex-col gap-3">
+            {tripMeta}
+            <div className="relative min-h-[70vh] flex-1 lg:grid lg:min-h-0 lg:grid-cols-[minmax(0,1.2fr)_minmax(280px,0.8fr)] lg:gap-4">
+              <div className="h-[70vh] min-h-[320px] lg:h-auto lg:min-h-[520px]">
+                <TripMap
+                  trip={trip}
+                  selectedKey={selectedKey}
+                  highlightKey={hoverKey}
+                  focusTarget={focusTarget}
+                  activeDay={activeDay}
+                  nearbyPlaces={nearbyPlaces}
+                  onSelect={handleSelectPlace}
+                />
+              </div>
+              <div className="hidden min-h-[360px] rounded-2xl border border-[var(--line)] bg-white/50 p-4 backdrop-blur-sm lg:block">
+                {itineraryProps && <ItineraryPanel {...itineraryProps} />}
+              </div>
+              <ItineraryBottomSheet
+                snap={sheetSnap}
+                onSnapChange={setSheetSnap}
+                title={`${trip.destination} 行程`}
+              >
+                {itineraryProps && <ItineraryPanel {...itineraryProps} />}
+              </ItineraryBottomSheet>
+            </div>
+          </div>
+        )}
+
+        {workspaceTab === 'ontrip' && trip && onTripDay != null && (
+          <div className="flex h-full min-h-0 flex-col gap-4">
+            {tripMeta}
+            <OnTripFocusCard
+              dayNumber={onTripDay}
+              startDate={trip.start_date}
+              focus={focusSlot}
+              travelMode={travelMode}
+              onNavigate={() => {
+                if (!focusSlot) return;
+                const target = toFocusTarget(
+                  focusSlot.day,
+                  focusSlot.index,
+                  focusSlot.item,
+                );
+                handleSelectPlace(target.key, target);
+              }}
+              onCheckIn={handleCheckIn}
+              onRegenerate={() => setRegenFocusOpen(true)}
+              onRescue={() => {
+                setShowRescueForm(true);
+                setSheetSnap('half');
+              }}
+            />
+
+            {showRescueForm && (
+              <div className="space-y-3">
                 <SosButton
                   onRescue={(payload) => {
                     setRescue(payload);
                     setError(null);
                   }}
-                  onError={(message) => setError(message)}
+                  onError={(message) => {
+                    setError(message);
+                    showToast(message);
+                  }}
                 />
                 <RescuePanel
                   rescue={rescue}
-                  onReplaceCurrent={(place) => applyRescuePlace(place, 'replace')}
-                  onInsertNext={(place) => applyRescuePlace(place, 'insert')}
-                  onDismiss={() => setRescue(null)}
-                />
-              </>
-            )}
-          </aside>
-        )}
-
-        <main className="min-h-[70vh]">
-          {!trip ? (
-            <div className="animate-rise-delay-1 flex h-full min-h-[420px] items-end rounded-2xl border border-dashed border-[var(--line)] bg-[rgba(15,107,92,0.06)] p-8">
-              <div className="max-w-md">
-                <h2 className="font-display text-3xl text-[var(--ink)]">
-                  先選一個城市
-                </h2>
-                <p className="mt-2 text-[var(--ink-soft)]">
-                  選城市與出發日 → 勾旅行方向與想做的事 → 一鍵生成。
-                </p>
-              </div>
-            </div>
-          ) : (
-            <div className="animate-rise flex h-full min-h-0 flex-col gap-4">
-              <div className="flex flex-wrap items-end justify-between gap-3">
-                <div>
-                  <p className="text-xs tracking-wide text-[var(--ink-soft)] uppercase">
-                    {trip.destination} · {trip.itinerary.length}/
-                    {trip.total_days} 天
-                    {trip.start_date ? ` · 出發 ${trip.start_date}` : ''}
-                    {tripId ? ` · #${tripId.slice(0, 8)}` : ''}
-                  </p>
-                  <h2 className="font-display text-3xl text-[var(--ink)]">
-                    {trip.trip_title}
-                  </h2>
-                </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <ModeToggle
-                    mode={appMode}
-                    override={modeOverride}
-                    canAutoOnTrip={canAutoOnTrip}
-                    onChange={handleModeOverride}
-                  />
-                  {appMode === 'planning' && (
-                    <button
-                      type="button"
-                      onClick={() => setShowMoreTools((v) => !v)}
-                      className="rounded-lg border border-[var(--line)] bg-white/80 px-3 py-2 text-xs text-[var(--ink-soft)]"
-                    >
-                      {showMoreTools ? '收合更多' : '更多工具'}
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              {appMode === 'planning' && showNextSteps && (
-                <NextStepsBar
-                  trip={trip}
-                  tripId={tripId}
-                  onTripIdChange={setTripId}
-                  onToast={showToast}
-                  onStayPlanning={() => {
-                    setShowNextSteps(false);
-                    handleModeOverride('planning');
-                    setSheetSnap('half');
-                    showToast('可以點卡片換景點或看地圖');
-                  }}
-                  onStartOnTrip={() => {
-                    setShowNextSteps(false);
-                    handleModeOverride('ontrip');
-                    setSheetSnap('mapFocus');
-                  }}
-                />
-              )}
-
-              {appMode === 'planning' && showMoreTools && (
-                <div className="flex flex-wrap items-start gap-3 rounded-2xl border border-[var(--line)] bg-white/50 p-3">
-                  <ExportMapsButton trip={trip} travelMode={travelMode} />
-                  <DestinationInfoCard
-                    destination={trip.destination}
-                    essentials={trip.destination_essentials}
-                  />
-                </div>
-              )}
-
-              {appMode === 'ontrip' && onTripDay != null && (
-                <OnTripFocusCard
-                  dayNumber={onTripDay}
-                  startDate={trip.start_date}
-                  focus={focusSlot}
-                  travelMode={travelMode}
-                  onNavigate={() => {
-                    if (!focusSlot) return;
-                    const target = toFocusTarget(
-                      focusSlot.day,
-                      focusSlot.index,
-                      focusSlot.item,
-                    );
-                    handleSelectPlace(target.key, target);
-                  }}
-                  onCheckIn={handleCheckIn}
-                  onRegenerate={() => setRegenFocusOpen(true)}
-                  onRescue={() => {
-                    setShowRescueForm(true);
-                    setSheetSnap('half');
-                  }}
-                />
-              )}
-
-              {appMode === 'ontrip' && showRescueForm && (
-                <div className="space-y-3">
-                  <SosButton
-                    onRescue={(payload) => {
-                      setRescue(payload);
-                      setError(null);
-                    }}
-                    onError={(message) => {
-                      setError(message);
-                      showToast(message);
-                    }}
-                  />
-                  <RescuePanel
-                    rescue={rescue}
-                    compact
-                    onReplaceCurrent={(place) =>
-                      applyRescuePlace(place, 'replace')
-                    }
-                    onInsertNext={(place) => applyRescuePlace(place, 'insert')}
-                    onDismiss={() => {
-                      setRescue(null);
-                      setShowRescueForm(false);
-                    }}
-                  />
-                </div>
-              )}
-
-              <div className="relative min-h-[70vh] flex-1 lg:grid lg:min-h-0 lg:grid-cols-[minmax(0,1.15fr)_minmax(320px,0.85fr)] lg:gap-4">
-                <div className="h-[70vh] min-h-[320px] lg:h-auto lg:min-h-[480px]">
-                  <TripMap
-                    trip={trip}
-                    selectedKey={selectedKey}
-                    highlightKey={hoverKey}
-                    focusTarget={focusTarget}
-                    activeDay={
-                      appMode === 'ontrip' && onTripDay != null
-                        ? onTripDay
-                        : activeDay
-                    }
-                    nearbyPlaces={nearbyPlaces}
-                    onSelect={handleSelectPlace}
-                  />
-                </div>
-
-                <div className="hidden min-h-[360px] rounded-2xl border border-[var(--line)] bg-white/50 p-4 backdrop-blur-sm lg:block xl:min-h-0">
-                  {itineraryProps && <ItineraryPanel {...itineraryProps} />}
-                </div>
-
-                <ItineraryBottomSheet
-                  snap={sheetSnap}
-                  onSnapChange={setSheetSnap}
-                  title={
-                    appMode === 'ontrip'
-                      ? '今日行程'
-                      : `${trip.destination} 行程`
+                  compact
+                  onReplaceCurrent={(place) =>
+                    applyRescuePlace(place, 'replace')
                   }
-                >
-                  {itineraryProps && <ItineraryPanel {...itineraryProps} />}
-                </ItineraryBottomSheet>
+                  onInsertNext={(place) => applyRescuePlace(place, 'insert')}
+                  onDismiss={() => {
+                    setRescue(null);
+                    setShowRescueForm(false);
+                  }}
+                />
               </div>
-            </div>
-          )}
-        </main>
-      </div>
+            )}
+
+            {mapBlock}
+          </div>
+        )}
+      </main>
+
+      <TripWorkspaceTabs
+        placement="bottom"
+        active={workspaceTab}
+        hasTrip={Boolean(trip)}
+        onChange={handleWorkspaceTab}
+        onBlocked={() => showToast('請先生成行程')}
+      />
 
       {regenFocusOpen && focusSlot && trip && (
         <RegenerateSlotModal
